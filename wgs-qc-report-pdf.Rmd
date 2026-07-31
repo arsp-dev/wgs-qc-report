@@ -1,0 +1,169 @@
+---
+title: \vspace{-1.5cm} \begin{LARGE} WGS Quality Control Report \end{LARGE}
+output:
+  pdf_document: 
+    latex_engine: lualatex
+    keep_tex: true
+geometry: margin=0.75in
+mainfont: Helvetica
+papersize: a4
+header-includes:
+- \usepackage{titling}
+- \pretitle{\begin{flushleft}}
+- \posttitle{\end{flushleft}} 
+- \usepackage{booktabs}
+- \usepackage{longtable}
+- \usepackage{float}
+- \floatplacement{figure}{H}
+- \usepackage{colortbl}
+- \usepackage{pdflscape}
+- \usepackage{tabu}
+- \usepackage{makecell}
+- \usepackage{xcolor}
+- \usepackage[table]{xcolor}
+- \usepackage{soul}
+- \usepackage{caption}
+- \usepackage[singlelinecheck=false]{caption}
+- \usepackage[font={small,bf}]{caption}
+- \usepackage{multirow}
+- \usepackage{array}
+- \usepackage{lscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+- \usepackage[dvipsnames]{xcolor}
+- \renewcommand{\footnotesize}{\tiny}
+- \usepackage{threeparttable}
+- \definecolor{mygreen}{HTML}{006b54}  #define new hex 
+- \definecolor{myyellow}{HTML}{ffd858}
+- \definecolor{myred}{HTML}{D2042D}
+- \usepackage{graphicx}
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.pos = 'H')
+```
+
+```{r load library, echo = FALSE, warning = FALSE, message = FALSE}
+library(tidyverse)
+library(knitr)
+library(readxl)
+library(kableExtra)
+library(readr)
+library(writexl)
+library(conflicted)
+library(plotly)
+library(webshot2)
+
+conflicts_prefer(openxlsx::write.xlsx)
+conflicts_prefer(dplyr::filter)
+```
+
+```{r helpers, echo = FALSE, warning = FALSE, message = FALSE}
+# Remove the trailing "_<batch>" suffix appended to sample IDs
+strip_batch <- function(x) sub("(.*)_[^_]*$", "\\1", x)
+
+# "a) X, b) Y, and c) Z" style list, used for narrative captions
+letter_and_list <- function(x) {
+  out <- paste0(letters[seq_along(x)], ") ", x)
+  if (length(out) > 1) out[length(out)] <- paste("and", out[length(out)])
+  out
+}
+
+# Color a PASSED / WARNING / FAILED status value for kable/LaTeX output
+color_status <- function(x) {
+  case_when(
+    x == "PASSED"  ~ cell_spec(x, background = "#006b54", color = "white"),
+    x == "WARNING" ~ cell_spec(x, background = "#ffd858"),
+    x == "FAILED"  ~ cell_spec(x, background = "#D2042D", color = "white"),
+    TRUE ~ x
+  )
+}
+
+# Wrap flagged cells in a red LaTeX colorbox.
+# status_cols is a named vector: names are the columns in `status_df` that
+# hold "FAILED"/"PASSED", values are the matching column to highlight in
+# `value_df`. Matching is by row position, mirroring how the original
+# per-row loops worked.
+highlight_failed <- function(value_df, status_df, status_cols) {
+  for (status_col in names(status_cols)) {
+    val_col <- status_cols[[status_col]]
+    rows <- which(status_df[[status_col]] == "FAILED")
+    for (i in rows) {
+      value_df[i, val_col] <- paste0(
+        "\\colorbox{myred}{\\textcolor{white}{\\textbf{", value_df[i, val_col], "}}}"
+      )
+    }
+  }
+  value_df
+}
+
+# Standard PASSED/WARNING/FAILED legend used on the QC tables
+pass_fail_legend <- c(
+  "\\\\colorbox{mygreen}{\\\\textcolor{white}{PASSED}}", "  |  ",
+  "\\\\colorbox{myyellow}{WARNING}", "  |  ",
+  "\\\\colorbox{myred}{\\\\textcolor{white}{FAILED}}"
+)
+
+# Render a QC table: switches to a repeating longtable once it's too long
+# for one page (>= longtable_threshold rows), otherwise scales to fit.
+render_qc_table <- function(df, legend, italic_col = 3, longtable_threshold = 30) {
+  long <- nrow(df) >= longtable_threshold
+  df %>%
+    kable(format = "latex", booktabs = TRUE, escape = FALSE, align = "c",
+          row.names = FALSE, longtable = long) %>%
+    kable_styling(
+      latex_options = if (long) c("repeat_header", "scale_down") else c("scale_down", "hold_position"),
+      font_size = if (long) 7 else NULL
+    ) %>%
+    row_spec(0, background = "#D4D4D4", bold = TRUE) %>%
+    column_spec(italic_col, italic = TRUE) %>%
+    footnote(general = legend, general_title = "Legend:", footnote_as_chunk = TRUE, escape = FALSE)
+}
+```
+
+```{r load-data, echo = FALSE, warning = FALSE, message = FALSE}
+# --- rename species column to wgs_id and fill in genus-only IDs ---
+wgs_df <- wgs_result_df %>%
+  rename(wgs_id = species) %>%
+  mutate(wgs_id = case_when(
+    wgs_id == "Acinetobacter" ~ "Acinetobacter baumannii",
+    wgs_id == "Escherichia"   ~ "Escherichia coli",
+    TRUE ~ wgs_id
+  ))
+
+# --- load organism code reference file ---
+org_df <- read_xlsx(here("data_files", "whonet_codes_2024.xlsx"), "ORGANISM") %>%
+  select(ORG_ARS, ORGANISM_name) %>%
+  rename(wgs_id = ORGANISM_name, org_code = ORG_ARS)
+
+# --- merge & clean organism code ---
+wgs_df <- wgs_df %>%
+  left_join(org_df, by = "wgs_id") %>%
+  mutate(
+    org_code_clean = case_when(
+      wgs_id %in% c("Escherichia/Shigella", "Escherichia coli/Shigella") ~ "eco",
+      str_detect(wgs_id, "Salmonella enterica") ~ "sat",
+      str_detect(wgs_id, "Salmonella") ~ "sal",
+      str_detect(wgs_id, "Streptococcus pseudopneumoniae") ~ "spn",
+      str_detect(wgs_id, "Streptococcus pyogenes") ~ "spy",
+      str_detect(wgs_id, "Streptococcus oralis") ~ "sol",
+      str_detect(wgs_id, "Streptococcus") ~ "spn",
+      str_detect(wgs_id, "Staphylococcus epidermidis") ~ "sep",
+      str_detect(wgs_id, "Staphylococcus") ~ "sau",
+      str_detect(wgs_id, "Shigella") ~ "shi",
+      str_detect(wgs_id, "Vibrio") ~ "vic",
+      str_detect(wgs_id, "Klebsiella") ~ "kpn",
+      str_detect(wgs_id, "Raoultella planticola") ~ "kpn",
+      str_detect(wgs_id, "Pseudomonas") ~ "pae",
+      str_detect(wgs_id, "Acinetobacter") ~ "aba",
+      str_detect(wgs_id, "Burkholderia") ~ "pce",
+      str_detect(wgs_id, "Serratia marcescens") ~ "sma",
+      TRUE ~ org_code
+    )
+  )
+
+```
+
+
