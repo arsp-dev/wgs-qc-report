@@ -25,3 +25,27 @@ sheets <- c(
 
 # Reads all sheets and assigns them directly to df_* variables in your environment
 list2env(lapply(sheets, function(s) read_sheet(wgs_sheet_id, sheet = s)), envir = .GlobalEnv)
+
+
+#--- pull data from Referred Database ---
+# referred_db credentials
+con <- dbConnect(
+  RPostgres::Postgres(),
+  dbname   = "referred_db",
+  host     = Sys.getenv("REFERRED_DB_HOST"),
+  port     = 5432,
+  user     = Sys.getenv("REFERRED_DB_USER"),
+  password = Sys.getenv("REFERRED_DB_PASSWORD")
+)
+
+print("--- Connection Established Successfully! ---")
+
+
+#  Download both tables into R memory
+df_referred  <- dbReadTable(con, "Referred_Data") %>%
+  rename_with(tolower) %>%
+  mutate(patient_id = str_trim(patient_id)) %>%
+  rename(organism = site_org) %>%
+  mutate(spec_num = toupper(spec_num)) %>%
+  mutate(spec_num = gsub(" ", "", spec_num)) %>%
+  mutate(ref_val = TRUE)
