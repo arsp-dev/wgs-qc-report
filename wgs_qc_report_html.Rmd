@@ -110,3 +110,215 @@ render_qc_table <- function(df, legend, italic_col = 3, longtable_threshold = 30
 }
 ```
 
+```{r load-data, echo = FALSE, warning = FALSE, message = FALSE}
+# --- rename species column to wgs_id and fill in genus-only IDs ---
+wgs_df <- wgs_result_df %>%
+  rename(wgs_id = species) %>%
+  mutate(wgs_id = case_when(
+    wgs_id == "Acinetobacter" ~ "Acinetobacter baumannii",
+    wgs_id == "Escherichia"   ~ "Escherichia coli",
+    TRUE ~ wgs_id
+  ))
+
+# --- load organism code reference file ---
+org_df <- read_xlsx(here("data_files/", "whonet_codes_2024.xlsx"), "ORGANISM") %>%
+  select(ORG_ARS, ORGANISM_name) %>%
+  rename(wgs_id = ORGANISM_name, org_code = ORG_ARS)
+
+# --- merge & clean organism code ---
+wgs_df <- wgs_df %>%
+  left_join(org_df, by = "wgs_id") %>%
+  mutate(
+    org_code_clean = case_when(
+      wgs_id %in% c("Escherichia/Shigella", "Escherichia coli/Shigella") ~ "eco",
+      str_detect(wgs_id, "Salmonella enterica") ~ "sat",
+      str_detect(wgs_id, "Salmonella") ~ "sal",
+      str_detect(wgs_id, "Streptococcus pseudopneumoniae") ~ "spn",
+      str_detect(wgs_id, "Streptococcus pyogenes") ~ "spy",
+      str_detect(wgs_id, "Streptococcus oralis") ~ "sol",
+      str_detect(wgs_id, "Streptococcus") ~ "spn",
+      str_detect(wgs_id, "Staphylococcus epidermidis") ~ "sep",
+      str_detect(wgs_id, "Staphylococcus") ~ "sau",
+      str_detect(wgs_id, "Shigella") ~ "shi",
+      str_detect(wgs_id, "Vibrio") ~ "vic",
+      str_detect(wgs_id, "Klebsiella") ~ "kpn",
+      str_detect(wgs_id, "Raoultella planticola") ~ "kpn",
+      str_detect(wgs_id, "Pseudomonas") ~ "pae",
+      str_detect(wgs_id, "Acinetobacter") ~ "aba",
+      str_detect(wgs_id, "Burkholderia") ~ "pce",
+      str_detect(wgs_id, "Serratia marcescens") ~ "sma",
+      TRUE ~ org_code
+    )
+  )
+
+```
+
+
+```{r sample-sheet, echo = FALSE, warning = FALSE, message = FALSE}
+# --- Read samplesheet ---
+wgs_samplesheet <- read_csv(here(paste0("data_files/", get_samplesheet, ".csv")))
+
+# --- Get experiment name ---
+WGS_exp_name <- unique(wgs_samplesheet$experiment_name)
+
+# --- remove special characters in batch name ---
+batch_name_clean <- gsub("[[:punct:]]", "", batch_code)
+
+# --- Modify dataframe ---
+wgs_samplesheet <- wgs_samplesheet %>%
+  rename_with(tolower) %>%
+  mutate(
+    sample_id = str_replace_all(toupper(sample_id), "-", "_"),
+    sample_id = paste(sample_id, batch_name_clean, sep = "_")
+  ) %>%
+  select(sample_id, description, index_plate_well)
+
+```
+
+
+
+\normalsize Batch Name: `r batch_code`
+
+\normalsize Experiment Name: `r WGS_exp_name`
+
+\fontsize{7}{8}
+\selectfont
+\captionsetup[table]{labelformat=empty}
+\renewcommand{\arraystretch}{1.2}
+```{r wgs-data, echo = FALSE, warning = FALSE, message = FALSE}
+# --- Subset wgs_df ---
+wgs_id_df <- wgs_df %>% select(sample_id, wgs_id)
+
+# --- paste batch number to arsrl result sample_id ---
+arsrl_id_df <- arsrl_result_df %>%
+  mutate(sample_id = paste(sample_id, batch_name_clean, sep = "_"),
+    iso_num = row_number())
+
+# --- merge arsrl result and samplesheet ---
+arsrl_result_merge <- unique(arsrl_id_df) %>%
+  left_join(unique(wgs_samplesheet), by = "sample_id")
+
+# --- Merge WGS and ARSRL results, restore original WGS sample order ---
+qc_listing_df <- unique(wgs_id_df) %>%
+  left_join(unique(arsrl_result_merge), by = "sample_id")
+
+qc_listing_df <- qc_listing_df[match(wgs_result_df$sample_id, qc_listing_df$sample_id), ]
+qc_listing_df$wgs_id[is.na(qc_listing_df$wgs_id)] <- "Not Identified"
+
+# --- Handle samples with no WGS results ---
+wgs_no_result <- wgs_samplesheet[!wgs_samplesheet$sample_id %in% wgs_df$sample_id, ]
+
+
+if (nrow(wgs_no_result) > 0) {
+  qc_listing_df$description <- ifelse(
+    is.na(qc_listing_df$description),
+    wgs_id_df$description[match(
+      paste0(wgs_no_result$sample_id, "_", batch_name_clean),
+      wgs_id_df$sample_id
+    )],
+    qc_listing_df$description
+  )
+}
+
+# --- Concordance check and assign isolate number---
+qc_listing_df <- qc_listing_df %>%
+  mutate(
+    Genus = word(arsrl_org, 1),
+    concordant = case_when(
+      arsrl_org == "No Referred Data" ~ TRUE,
+      wgs_id == "Not Identified"      ~ TRUE,
+      TRUE ~ str_detect(wgs_id, Genus),
+    ),
+    arsrl_org = if_else(concordant, arsrl_org, paste0(arsrl_org, " (x)"))
+  )
+
+# Match concordance back to WGS df
+wgs_df$concordant <- qc_listing_df$concordant[match(wgs_df$sample_id, qc_listing_df$sample_id)]
+
+```
+
+
+```{r sunburst-graph, echo = FALSE, warning = FALSE, message = FALSE, fig.align='center'}
+# --- Modify and Filter Bactscout dataframe ---
+df_bactscout_mod <- df_bactscout %>%
+  mutate(name = gsub("-", "_", name)) %>%
+  filter(name %in% sample_name)  %>%
+  mutate(species = str_remove(species, ";.*"))
+
+
+final_result_df <- df_bactscout_mod %>%
+  select(species, a_final_status) %>%
+  mutate(species = if_else(is.na(species), "Unidentified", species))
+
+
+sunburst_df <- final_result_df %>%
+  count(species, a_final_status, name = "value") %>%
+  mutate(
+    label = a_final_status,
+    parent = species
+  )
+
+# Add species as root nodes
+species_df <- sunburst_df %>%
+  group_by(species) %>%
+  summarise(value = sum(value), .groups = "drop") %>%
+  mutate(
+    label = species,
+    parent = ""
+  )
+
+sunburst_data <- bind_rows(
+  species_df %>% select(label, parent, value),
+  sunburst_df %>% select(label, parent, value)
+)
+
+
+sunburst_data <- sunburst_data %>%
+  mutate(
+    bold_label = paste0("<b>", label, "</b>"),
+    ids = ifelse(parent == "", label, paste(parent, "-", label)),
+    color = case_when(
+      label == "PASSED"  ~ "#006b54",
+      label == "FAILED"  ~ "#D2042D",
+      label == "WARNING" ~ "#ffd858",
+      TRUE               ~ "#aec7e8" # Default for bacteria
+    )
+  )
+
+
+# 3. Create the plot
+fig <- plotly::plot_ly(
+  data = sunburst_data,
+  ids = ~ids,
+  labels = ~bold_label,
+  parents = ~parent,
+  values = ~value,
+  type = 'sunburst',
+  branchvalues = 'total',
+  marker = list(colors = ~color),
+  insidetextfont = list(size = 15),
+  outsidetextfont = list(size = 15),
+  hovertemplate = "<b>%{label}</b><br>Value: %{value}<extra></extra>"
+)
+
+fig <- fig %>% plotly::layout(
+  title = list(
+    font = list(size = 10),
+    y = 0.05,
+    x = 0.5,
+    xanchor = 'center',
+    yanchor = 'bottom'
+  ),
+  margin = list(l = 0, r = 0, b = 0, t = 40) 
+)
+
+
+fig <- fig %>% plotly::layout(
+  margin = list(l = 0, r = 0, b = 0, t = 40)
+)
+
+fig
+
+```
+
+
