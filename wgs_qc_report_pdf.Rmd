@@ -168,7 +168,7 @@ wgs_df <- wgs_df %>%
 
 ```{r sample-sheet, echo = FALSE, warning = FALSE, message = FALSE}
 # --- Read samplesheet ---
-wgs_samplesheet <- read_csv(here(paste0("data_files", get_samplesheet, ".csv")))
+wgs_samplesheet <- read_csv(here(paste0("data_files/", get_samplesheet, ".csv")))
 
 # --- Get experiment name ---
 WGS_exp_name <- unique(wgs_samplesheet$experiment_name)
