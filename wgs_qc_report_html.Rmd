@@ -321,4 +321,1053 @@ fig
 
 ```
 
+***Figure 1. *** **Distribution and quality control results of sequenced isolates.**
+$\\$ $\\$
+
+***Table 1.*** **Concordance analysis of bacterial identification of sequenced isolates.**
+```{r qc-listing, echo = FALSE, warning = FALSE, message = FALSE}
+# --- Identify failed WGS sample names ---
+raw_read_failed <- df_bactscout_mod$name[df_bactscout_mod$a_final_status == "FAILED"]
+failure_color <- which(qc_listing_df$sample_id %in% raw_read_failed)
+
+# --- Clean up ---
+qc_listing_df <- qc_listing_df %>%
+  select(-Genus, -concordant) %>%
+  mutate(sample_id = strip_batch(sample_id))
+
+# Rename and reorder columns
+colnames(qc_listing_df) <- c("Sample ID", "WGS", "ARSRL", "Isolate No.", "Description", "Index")
+qc_listing_df <- qc_listing_df[, c("Isolate No.", "Sample ID", "Description", "Index", "ARSRL", "WGS")]
+
+# --- Generate formatted table ---
+# --- Generate Legend HTML ---
+qc_legend <- HTML(paste0(
+  "<strong>Legend: </strong>",
+  "PASS | ",
+  '<span style="background-color: #FD7979; padding: 2px 6px; border-radius: 4px; font-weight: bold;">FAILURE</span> | ',
+  "(x) - NON-CONCORDANT"
+))
+
+# --- Generate Interactive Table ---
+qc_listing_table <- datatable(qc_listing_df,
+          extensions = 'Buttons',
+          escape = FALSE,
+          rownames = FALSE,
+          class = 'cell-border stripe',
+          caption = tags$caption(style = 'caption-side: bottom; text-align: left;', qc_legend),
+          options = list(
+            pageLength = 10,
+            scrollX = TRUE,
+            dom = 'lBfrtip',
+            buttons = c('copy', 'csv', 'excel', 'print'),
+            initComplete = JS(
+              "function(settings, json) {",
+              "$(this.api().table().header()).css({'background-color': '#D4D4D4', 'color': 'black', 'text-align': 'center'});",
+              "$(this.api().table().header()).find('th').css('text-align', 'center');",
+              "}"
+             )
+          )
+) %>%
+  formatStyle(columns = c(5, 6), fontStyle = 'italic') %>%
+  formatStyle(columns = names(qc_listing_df), textAlign = 'center')
+
+# ONLY apply row highlighting if failure_color actually has numbers
+if (length(failure_color) > 0) {
+  qc_listing_table <- qc_listing_table %>%
+    formatStyle(
+      columns = names(qc_listing_df),
+      target = 'row',
+      backgroundColor = styleRow(failure_color, '#FD7979')
+    )
+}
+
+# Now render
+qc_listing_table
+
+```
+
+```{r low-reads, echo=FALSE, message=FALSE, warning=FALSE,results='asis'}
+# --- filter dataframe based on the sample_id not present in the WGS samplesheet ---
+wgs_lowreads <- wgs_samplesheet[!(wgs_samplesheet$sample_id %in% wgs_df$sample_id), ] %>%
+  select(sample_id, description)
+
+if (nrow(wgs_lowreads) != 0) {
+  lowreads_table <- wgs_lowreads
+  lowreads_table$remarks <- "low read count"
+  
+  # Remove batch name in sample_id
+  lowreads_table$sample_id <- sub("(.*)_[^_]*$", "\\1", lowreads_table$sample_id)
+  colnames(lowreads_table) <- c('Sample ID', 'Description', 'Remarks') 
+
+  # --- Create Custom Header for "add_header_above" equivalent ---
+  # This creates a spanning header row across all 3 columns
+  sketch <- htmltools::withTags(table(
+    class = 'display',
+    thead(
+      tr(
+        th(colspan = 3, style = "border-bottom: 1px solid #111;", "Sample excluded in the analysis")
+      ),
+      tr(
+        lapply(colnames(lowreads_table), th, style = "text-align: center;")
+      )
+    )
+  ))
+
+  # --- Render Interactive Table ---
+  lowreads_print <- datatable(lowreads_table,
+            container = sketch,        # Uses the custom header defined above
+            rownames = FALSE,
+            class = 'cell-border stripe',
+            options = list(
+              dom = 'Bfrtip',               # Only show the table (no search/pagination) as it's a summary
+              scrollX = TRUE,
+              columnDefs = list(
+                list(className = 'dt-center', targets = "_all"), # Center all body cells
+                list(width = '150px', targets = 0),              # Approx 3cm
+                list(width = '150px', targets = 1),              # Approx 3cm
+                list(width = '350px', targets = 2)               # Approx 7cm
+              ),
+              initComplete = JS(
+                "function(settings, json) {",
+                "$(this.api().table().header()).find('tr:eq(1) th').css({",
+                "  'background-color': '#D4D4D4',",
+                "  'color': 'black',",
+                "  'text-align': 'center'", # Centers the header text block
+                "});",
+                "}"
+                )
+              )
+  )
+  
+  # Render the table
+  lowreads_print
+}
+
+```
+
+$\\$
+
+
+### **RAW READS QC**
+
+$\\$
+
+
+***Table 2.*** **Summary of raw reads quality control analysis.**
+```{r bactscout-df-value, echo = FALSE, warning = FALSE, message = FALSE}
+# Identify Samples Without Bactscout Results
+no_bactscout_result <- setdiff(sample_name, df_bactscout_mod$name) %>% 
+  str_remove("_[^_]*$")
+
+# 2. Define metric status columns mapping: "Display Column" = "Status Column in df_bactscout_mod"
+status_cols <- c(
+  "Species Abundance"     = "contamination_message",
+  "Coverage (Qualibact)" = "coverage_estimate_qualibact_status",
+  "Duplication Rate"      = "duplication_status",
+  "GC Content"            = "gc_content_status",
+  "MLST (ST)"             = "mlst_status",
+  "Read Length"           = "read_length_status",
+  "Read Q30"              = "read_q30_status"
+)
+
+# Clean and Prepare Main Display Data Frame
+bactscout_df_merge <- df_bactscout_mod %>%
+  # Normalize contamination message to PASSED / FAILED first
+  mutate(contamination_message = ifelse(contamination_message == "OK", "PASSED", "FAILED")) %>%
+  # Merge with Isolate ID mapping
+  inner_join(arsrl_id_df, by = c("name" = "sample_id")) %>%
+  transmute(
+    `Isolate No.`          = iso_num,
+    `Sample ID`            = str_remove(name, "_[^_]*$"),
+    Species                = str_remove(species, ";.*"),
+    `Species Abundance`    = str_remove(species_abundance, ";.*"),
+    `Coverage (Qualibact)` = coverage_estimate_qualibact,
+    `Duplication Rate`     = duplication_rate,
+    `GC Content`           = sprintf("%.1f", gc_content),
+    `MLST (ST)`            = ifelse(is.null(mlst_st) | is.na(mlst_st), "", as.character(mlst_st)),
+    `Read Length`          = paste0(read1_mean_length, " - ", read2_mean_length),
+    `Read Q30`             = read_q30_rate,
+    `Final Status`         = a_final_status,
+    
+    # Explicitly create hidden status helper columns with safe fixed names
+    status_contamination_message            = contamination_message,
+    status_coverage_estimate_qualibact_status = coverage_estimate_qualibact_status,
+    status_duplication_status                 = duplication_status,
+    status_gc_content_status                  = gc_content_status,
+    status_mlst_status                        = mlst_status,
+    status_read_length_status                 = read_length_status,
+    status_read_q30_status                    = read_q30_status
+  )
+
+# Define Legend & Table Options
+legend_html <- HTML(paste0(
+  "<strong>Legend: </strong>",
+  '<span style="background-color: #006b54; color: white; padding: 2px 6px; border-radius: 4px;">PASSED</span> | ',
+  '<span style="background-color: #ffd858; padding: 2px 6px; border-radius: 4px;">WARNING</span> | ',
+  '<span style="background-color: #D2042D; color: white; padding: 2px 6px; border-radius: 4px;">FAILED</span>'
+))
+
+# Number of visible display columns
+disp_cols <- 1:11
+
+# Build DT Interactive Table
+bactscout_table <- datatable(
+  bactscout_df_merge,
+  extensions = 'Buttons',
+  escape = FALSE,
+  rownames = FALSE,
+  class = 'cell-border stripe',
+  caption = tags$caption(style = 'caption-side: bottom; text-align: left;', legend_html),
+  options = list(
+    pageLength = 15,
+    scrollX = TRUE,
+    dom = 'lBfrtip',
+    buttons = c('copy', 'csv', 'excel', 'print'),
+    # Hide helper status columns (columns 12 onwards)
+    columnDefs = list(list(targets = 11:(ncol(bactscout_df_merge) - 1), visible = FALSE)),
+    initComplete = JS(
+      "function(settings, json) {",
+      "  $(this.api().table().header()).css({'background-color': '#D4D4D4', 'color': 'black'});",
+      "  $(this.api().table().header()).find('th').css('text-align', 'center');",
+      "}"
+    )
+  )
+) %>%
+  # Target Final Status styling
+  formatStyle(
+    'Final Status',
+    target = 'cell',
+    backgroundColor = styleEqual(c('PASSED', 'WARNING', 'FAILED'), c('#006b54', '#ffd858', '#D2042D')),
+    color = styleEqual(c('PASSED', 'WARNING', 'FAILED'), c('white', 'black', 'white')),
+    fontWeight = 'bold'
+  ) %>%
+  formatStyle(disp_cols, textAlign = 'center') %>%
+  formatStyle('Species', fontStyle = 'italic')
+
+# 6. Apply dynamic cell red highlighting based on hidden status columns
+for (disp_col in names(status_cols)) {
+  status_col_name <- paste0("status_", status_cols[[disp_col]])
+  bactscout_table <- bactscout_table %>%
+    formatStyle(
+      disp_col,
+      valueColumns = status_col_name,
+      backgroundColor = styleEqual('FAILED', '#D2042D'),
+      color = styleEqual('FAILED', 'white'),
+      fontWeight = styleEqual('FAILED', 'bold')
+    )
+}
+
+bactscout_table
+
+```
+
+```{r no-bactscout-result, echo=FALSE, message=FALSE, warning=FALSE}
+if(length(no_bactscout_result) != 0){
+  # Convert the vector to a single comma-separated string
+  no_bactscout_id <- paste(no_bactscout_result, collapse = ", ")
+  
+  # Create new dataframe
+  df_no_bactscout <- data.frame(
+    sample_id = no_bactscout_id, 
+    Remarks = "No Raw Reads Data"
+  )
+  
+  colnames(df_no_bactscout) <- c('Sample ID', 'Remarks')
+  
+  # --- Create Custom Header (equivalent to add_header_above) ---
+  sketch <- htmltools::withTags(table(
+    class = 'display',
+    thead(
+      tr(
+        th(colspan = ncol(df_no_bactscout), 
+           style = "font-style: bold; font-size: 16px; color: black;", 
+           "Summary of No Raw Reads Data")
+        ),
+      tr(
+        lapply(colnames(df_no_bactscout), th, style = "text-align: center;")
+        )
+      )
+  ))
+  
+  
+  # Render Interactive Table
+  no_bactscout_table <- datatable(df_no_bactscout,
+    #extensions = 'Buttons',
+    container = sketch,
+    rownames = FALSE,
+    class = 'cell-border stripe',
+    options = list(
+      dom = 't', # Buttons, Length, filter, processing, table, info, pagination
+      buttons = c('copy', 'csv', 'excel'),
+      lengthMenu = list(c(5, 10, 25, -1), c('5', '10', '25', 'All')),
+      pageLength = 10,
+      scrollX = TRUE, # Important for long comma-separated lists
+      columnDefs = list(
+        list(targets = 0, className = 'dt-center'),  # Sample IDs left aligned
+        list(targets = 1, className = 'dt-center') # Remarks center aligned
+      ),
+      initComplete = JS(
+        "function(settings, json) {",
+        "$(this.api().table().header()).css({'background-color': '#D4D4D4', 'color': 'black'});",
+        "$(this.api().table().header()).find('th').css('text-align', 'center');",
+        "}"
+      )
+    )
+  )
+  
+  # Render the table
+  no_bactscout_table
+}
+
+```
+
+
+```{r recommendation-table, echo=FALSE, message=FALSE, warning=FALSE}
+# Gather all QC failure sources safely
+failures_list <- list(
+  # Non-concordant WGS
+  wgs_df %>%
+    filter(concordant == "FALSE" | concordant == FALSE) %>%
+    transmute(sample_id, failed_conditions = "Non-concordant result"),
+
+  # Failed raw reads (from BactScout)
+  bactscout_df_result %>%
+    filter(!is.na(failed_cols) & failed_cols != "") %>%
+    transmute(sample_id = name, failed_conditions = failed_cols)
+)
+
+# Add low read count failures if present
+if (exists("wgs_lowreads") && nrow(wgs_lowreads) > 0) {
+  failures_list[[length(failures_list) + 1]] <- wgs_lowreads %>%
+    transmute(sample_id, failed_conditions = "Low read counts")
+}
+
+# Combine and aggregate failures by Sample ID, then group by failure reasons
+summary_raw_df <- bind_rows(failures_list) %>%
+  mutate(sample_id = str_remove(sample_id, "_[^_]*$")) %>%
+  group_by(sample_id) %>%
+  summarise(
+    failed_conditions = paste(unique(failed_conditions), collapse = ", "),
+    .groups = "drop"
+  )
+
+# Handle Empty State vs Aggregated State
+if (nrow(summary_raw_df) == 0) {
+  summary_raw_df <- tibble(
+    `Sample ID` = "-",
+    `Reason - Failed Metrics` = "No further action required for this batch."
+  )
+} else {
+  summary_raw_df <- summary_raw_df %>%
+    group_by(failed_conditions) %>%
+    summarise(
+      sample_id = paste(unique(sample_id), collapse = ", "),
+      .groups = "drop"
+    ) %>%
+    transmute(
+      `Sample ID` = sample_id,
+      `Reason - Failed Metrics` = failed_conditions
+    )
+}
+
+# Create Custom Header Sketch
+sketch <- htmltools::withTags(table(
+  class = 'display',
+  thead(
+    tr(
+      th(colspan = 2, 
+         style = "font-weight: bold; font-size: 16px; color: black; text-align: center;", 
+         "Summary of Raw Reads with FAILED QC results")
+    ),
+    tr(
+      th(style = "text-align: center;", "Sample ID"),
+      th(style = "text-align: center;", "Reason - Failed Metrics")
+    )
+  )
+))
+
+# Render Interactive Table
+datatable(
+  summary_raw_df,
+  container = sketch,
+  rownames = FALSE,
+  class = 'cell-border stripe',
+  options = list(
+    dom = 't',
+    pageLength = -1, # Display all rows since summary tables are typically short
+    scrollX = TRUE,
+    columnDefs = list(
+      list(targets = '_all', className = 'dt-center')
+    ),
+    initComplete = JS(
+      "function(settings, json) {",
+      "  $(this.api().table().header()).css({'background-color': '#D4D4D4', 'color': 'black'});",
+      "  $(this.api().table().header()).find('th').css('text-align', 'center');",
+      "}"
+    )
+  )
+)
+```
+
+
+$\\$
+$\\$
+
+
+### **ASSEMBLY QC**
+
+$\\$
+
+***Table 3.*** **Summary of assembly reads quality control analysis.**
+```{r assembly-qc, echo = FALSE, warning = FALSE, message = FALSE}
+# --- Data Preparation & Cleaning ---
+assembly_qc <- merge(wgs_df, arsrl_id_df, by = "sample_id") %>%
+  mutate(
+    wgs_id_clean = case_when(
+      wgs_id %in% c("Escherichia/Shigella", "Escherichia coli/Shigella") ~ "Escherichia coli",
+      TRUE ~ wgs_id
+    )
+  )
+
+# --- Qualibact Reference Processing ---
+qualibact_data <- read_csv(here("data_files/","qualibact_filtered_metrics_07292026.csv")) %>%
+  mutate(
+    species = str_replace_all(species, "_", " "),
+    metric_clean = str_to_lower(metric)
+  )
+
+# Determine genus-only species present in sample
+genus_ids <- assembly_qc %>%
+  filter(!str_detect(wgs_id, " ")) %>%
+  pull(wgs_id) %>%
+  unique()
+
+# Generate reference ranges for exact species matches
+qualibact_ref <- qualibact_data %>%
+  filter(species %in% assembly_qc$wgs_id_clean)
+
+# Aggregate genus-level bounds if genus-only IDs exist
+if (length(genus_ids) > 0) {
+  wgs_pattern <- paste(genus_ids, collapse = "|")
+  
+  genus_ref <- qualibact_data %>%
+    filter(str_detect(species, wgs_pattern)) %>%
+    mutate(species = str_extract(species, "^[^ ]+")) %>%
+    group_by(species, metric_clean) %>%
+    summarize(
+      lower_bounds = min(lower_bounds, na.rm = TRUE),
+      upper_bounds = max(upper_bounds, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  qualibact_ref <- bind_rows(qualibact_ref, genus_ref) %>%
+    mutate(across(c(lower_bounds, upper_bounds), ~ ifelse(is.infinite(.), NA, .)))
+}
+
+# --- Metric Mapping & QC Checks ---
+metric_map <- c(
+  "completeness"           = "completeness",
+  "contamination"          = "contamination",
+  "total_coding_sequences" = "total_coding_sequences",
+  "genome_size"            = "genome_size",
+  "gc_content"             = "gc_content",
+  "n50"                    = "n50_contig_length",
+  "no_of_contigs"          = "total_contig"
+)
+
+assembly_qc_checked <- assembly_qc
+
+# Loop to append threshold joins and run bound check evaluations
+for (m in names(metric_map)) {
+  ref <- qualibact_ref %>%
+    filter(metric_clean == m) %>%
+    select(species, lower_bounds, upper_bounds)
+  
+  col_name <- metric_map[m]
+  qc_col <- paste0(col_name, "_qc")
+  
+  assembly_qc_checked <- assembly_qc_checked %>%
+    left_join(ref, by = c("wgs_id_clean" = "species")) %>%
+    mutate(
+      !!qc_col := case_when(
+        !is.na(lower_bounds) & .data[[col_name]] < lower_bounds ~ "FAILED",
+        !is.na(upper_bounds) & .data[[col_name]] > upper_bounds ~ "FAILED",
+        TRUE ~ "PASSED"
+      )
+    ) %>%
+    select(-lower_bounds, -upper_bounds)
+}
+
+# --- Summarize QC Failure Reasons & Merge Extra Metadata ---
+qc_cols <- c(
+  "Completeness"            = "completeness_qc",
+  "Contamination"           = "contamination_qc",
+  "Total Coding Sequences"  = "total_coding_sequences_qc",
+  "Genome Size"             = "genome_size_qc",
+  "GC Content"              = "gc_content_qc",
+  "N50"                     = "n50_contig_length_qc",
+  "Total Contigs"           = "total_contig_qc"
+)
+
+assembly_qc_checked <- assembly_qc_checked %>%
+  rowwise() %>%
+  mutate(
+    failed_conditions = {
+      values <- c_across(all_of(unname(qc_cols)))
+      failed <- names(qc_cols)[values != "PASSED"]
+      if (length(failed) == 0 || all(is.na(failed))) NA_character_ else paste(failed, collapse = ", ")
+    },
+    assembly_result = if_else(is.na(failed_conditions), "PASSED", "FAILED")
+  ) %>%
+  ungroup() %>%
+  left_join(
+    select(bactscout_df_result, name, raw_reads_result = a_final_status),
+    by = c("sample_id" = "name")
+  )
+
+# --- Export ---
+write_xlsx(assembly_qc_checked, "data_files/assembly_qc_checked.xlsx")
+```
+
+```{r aasembly-qc-graph, echo = FALSE, warning = FALSE, message = FALSE}
+# --- Create new column to check final status with warning status and list column indices with failed results ---
+assembly_qc_result <- assembly_qc_checked %>%
+  select(iso_num, sample_id, wgs_id, completeness_qc, contamination_qc, total_coding_sequences_qc, 
+        genome_size_qc, gc_content_qc, n50_contig_length_qc, total_contig_qc)
+
+assembly_qc_result$failed_idx <- apply(assembly_qc_result, 1, function(row) {
+  failed_cols <- which(row[-c(1:3)] == "FAILED") # exclude name and species
+    # Adjust index to match original dataframe
+    failed_cols <- failed_cols + 3
+    paste(failed_cols, collapse = ", ")
+})
+
+
+
+# --- List sample without assembly result ---
+no_assembly_result <- setdiff(sample_name, assembly_qc_result$sample_id)
+
+# --- remove text after last underscore ---
+no_assembly_result <- sub("_[^_]*$", "", no_assembly_result)
+
+
+# --- Modify dataframe ---
+assembly_qc_value <- assembly_qc_checked %>%
+  select(iso_num, sample_id, wgs_id, completeness, contamination, total_coding_sequences, 
+        genome_size, gc_content, n50_contig_length, total_contig, raw_reads_result, assembly_result) %>%
+  mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id))
+
+
+# Create a conversion function to convert Basepairs to MEgabasepairs
+bp_to_mb <- function(bp) {
+  x <- bp / 1e6
+  x <- format(round(x, 2), nsmall = 2)
+  x <- paste0(x, " Mb")
+  return(x)
+}
+
+assembly_qc_value$genome_size <- bp_to_mb(assembly_qc_value$genome_size)
+
+
+# Rename and reorder columns
+colnames(assembly_qc_value) <- c("Isolate No.","Sample ID", "WGS ID", "Completeness", "Contamination", "Total Coding Sequences",
+                                 "Genome Size", "GC Content", "N50", "Total Contig", "Raw Reads Result", "Assembly Result")
+
+# Change Assembly Result based on Raw Reads Result
+assembly_qc_value <- assembly_qc_value %>%
+  mutate(`Assembly Result` = ifelse(`Raw Reads Result` == 'FAILED', "FAILED", `Assembly Result`))
+
+```
+
+
+
+
+```{r assembly-df-html, echo = FALSE, warning = FALSE, message = FALSE}
+# --- 1. Prepare Data ---
+# Convert everything to character to support the HTML injected by the loop
+assembly_qc_value[] <- lapply(assembly_qc_value, as.character)
+
+# --- 2. Loop for Specific Cell Failures (Failed Indices) ---
+for (i in 1:nrow(assembly_qc_result)) {
+  # --- Process FAILED Indices (Red) ---
+  if (!is.na(assembly_qc_result$failed_idx[i]) && nzchar(assembly_qc_result$failed_idx[i])) {
+    
+    indices <- tryCatch({
+      as.numeric(trimws(unlist(strsplit(assembly_qc_result$failed_idx[i], ","))))
+    }, error = function(e) numeric(0))
+    
+    indices <- indices[!is.na(indices) & indices > 0]
+    
+    for (col in indices) {
+      if (col <= ncol(assembly_qc_value)) {
+        assembly_qc_value[i, col] <- cell_spec(
+          assembly_qc_value[i, col], 
+          format = "html", 
+          background = "#D2042D", 
+          color = "white", 
+          bold = TRUE,
+          extra_css = "display: block; width: 100%; height: 100%; padding: 4px; box-sizing: border-box; text-align: center;"
+        )
+      }
+    }
+  }
+
+}
+
+# --- 3. Generate Interactive Table ---
+
+legend_html <- HTML(paste0(
+  "<strong>Legend: </strong>",
+  '<span style="background-color: #006b54; color: white; padding: 2px 6px; border-radius: 4px;">PASSED</span> | ',
+  '<span style="background-color: #ffd858; padding: 2px 6px; border-radius: 4px;">WARNING</span> | ',
+  '<span style="background-color: #D2042D; color: white; padding: 2px 6px; border-radius: 4px;">FAILED</span>'
+))
+
+assembly_qc_table <- datatable(assembly_qc_value,
+          extensions = 'Buttons',
+          escape = FALSE, 
+          rownames = FALSE,
+          class = 'cell-border stripe',
+          caption = tags$caption(style = 'caption-side: bottom; text-align: left;', legend_html),
+          options = list(
+            dom = 'lBfrtip',
+            buttons = c('copy', 'csv', 'excel', 'print'),
+            pageLength = 10,
+            lengthMenu = list(c(10, 25, 50, -1), c('10', '25', '50', 'All')),
+            scrollX = TRUE,
+            # --- Centering the Body Data ---
+            columnDefs = list(
+              list(className = 'dt-center', targets = "_all") # Forces center alignment for all body cells
+            ),
+            # --- Centering and Styling the Header ---
+            initComplete = JS(
+              "function(settings, json) {",
+              "$(this.api().table().header()).css({",
+              "  'background-color': '#D4D4D4',",
+              "  'color': 'black'",
+              "});",
+              # Specifically target the header 'th' elements for centering
+              "$(this.api().table().header()).find('th').css('text-align', 'center');",
+              "}"
+            )
+          )
+        ) %>%
+  # --- 4. Apply Cell Background Colors ---
+  formatStyle(
+    c('Raw Reads Result', 'Assembly Result'), 
+    target = 'cell',
+    backgroundColor = styleEqual(
+      c('PASSED', 'WARNING', 'FAILED'), 
+      c('#006b54', '#ffd858', '#D2042D')
+    ),
+    color = styleEqual(
+      c('PASSED', 'WARNING', 'FAILED'), 
+      c('white', 'black', 'white')
+    ),
+    fontWeight = 'bold',
+    textAlign = 'center' # Double-ensures text within these colored cells is centered
+  ) %>% # Apply formatting to specific columns (analogous to column_spec)
+  formatStyle(
+    columns = 3, # Species columns
+    fontStyle = 'italic'
+  )
+
+assembly_qc_table
+
+```
+
+```{r assembly-summary-table ,echo=FALSE, message=FALSE, warning=FALSE}
+assembly_failed <- assembly_qc_checked %>% filter(!is.na(failed_conditions))
+
+if (nrow(assembly_failed) !=0) {
+  assembly_reco_df <- assembly_failed %>% select(sample_id, failed_conditions) %>%
+    mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id))
+} else {
+  sample_id <- ""
+  failed_conditions <- "No further action required for this batch."
+  
+  assembly_reco_df <- data.frame(sample_id,failed_conditions)
+}
+
+
+colnames(assembly_reco_df) <- c('Sample ID','Reason - Failed Metrics')
+
+```
+
+
+
+$\\$ $\\$ $\\$
+
+### **Final Recommendation based on QC results**
+```{r overall-recommendation-table ,echo=FALSE, message=FALSE, warning=FALSE}
+overall_reco <- assembly_qc_checked %>%
+  filter(raw_reads_result == "FAILED" | assembly_result == "FAILED") %>%
+  transmute(sample_id = strip_batch(sample_id), final_result = "FAILED")
+
+if (nrow(wgs_lowreads) > 0) {
+  overall_reco <- bind_rows(
+    overall_reco,
+    wgs_lowreads %>% transmute(sample_id = strip_batch(sample_id), final_result = "low read count")
+  )
+}
+
+nonconcordant <- wgs_df %>% filter(concordant == FALSE)
+if (nrow(nonconcordant) > 0) {
+  overall_reco <- bind_rows(
+    overall_reco,
+    nonconcordant %>% transmute(sample_id = strip_batch(sample_id), final_result = "non-concordant resul")
+  )
+}
+
+if (nrow(overall_reco) > 0) {
+  final_reco_df <- data.frame(
+    sample_id = paste(unique(overall_reco$sample_id), collapse = ", "),
+    remarks = "For Repeat Testing"
+  )
+} else {
+  final_reco_df <- data.frame(sample_id = "", remarks = "No further action required for this batch.")
+}
+colnames(final_reco_df) <- c("Sample ID", "Remarks")
+
+
+# Render Interactive Table
+final_reco_table <- datatable(
+  final_reco_df,
+  rownames = FALSE,
+  class = 'cell-border stripe',
+  options = list(
+    dom = 't', 
+    buttons = c('copy', 'csv', 'excel'),
+    lengthMenu = list(c(5, 10, 25, -1), c('5', '10', '25', 'All')),
+    pageLength = 10,
+    scrollX = TRUE,
+    columnDefs = list(
+      list(targets = "_all", className = 'dt-center') # Simplified centering for all columns
+    ),
+    initComplete = JS(
+      "function(settings, json) {",
+      "$(this.api().table().header()).css({'background-color': '#D4D4D4', 'color': 'black'});",
+      "}"
+    )
+  )
+)
+
+final_reco_table
+
+
+
+
+```
+
+$\\$ $\\$ $\\$
+
+```{r mlst_df ,echo=FALSE, message=FALSE, warning=FALSE}
+mlst_df <- overall_result %>%
+  select(sample_id, wgs_id, mlst_st) %>%
+  mutate(mlst_st = ifelse(mlst_st == "", "-", mlst_st))
+
+# Summarize and count MLST results
+mlst_summary_df <- mlst_df %>%
+  group_by(wgs_id, mlst_st) %>%
+  summarise(count = sum(!is.na(mlst_st)), .groups = "drop") %>%
+  mutate(mlst_count = paste0(mlst_st, " (n= ", count, " )")) %>%
+  group_by(wgs_id) %>%
+  summarise(mlst_count = paste(mlst_count, collapse = ", "), .groups = "drop")
+
+# list unique wgs_id in the dataframe, for the caption
+mlst_organism_list <- letter_and_list(unique(mlst_df$wgs_id))
+```
+
+
+
+### **MLST RESULTS**
+
+***Table 4.*** **Summary of Multilocus Sequence Typing (MLST) results of** ***`r paste(mlst_organism_list, collapse = ", ")`***
+
+```{r mlst_table, echo=FALSE, message=FALSE, warning=FALSE}
+colnames(mlst_summary_df) <- c('WGS ID','MLST (ST)')
+
+
+# Define Legend
+mlst_legend <- HTML('<strong>Legend: </strong> <span style="font-style: italic;">(-) Not identified</span>')
+  
+# 2. Create the interactive table (Save to a variable)
+mlst_tbl <- datatable(mlst_summary_df,
+  extensions = 'Buttons',
+  rownames = FALSE,
+  class = 'cell-border stripe',
+  caption = tags$caption(style = 'caption-side: bottom; text-align: left;', mlst_legend),
+  options = list(
+    dom = 'lBfrtip',
+    buttons = c('copy', 'csv', 'excel', 'print'),
+    pageLength = 10,
+    scrollX = TRUE,
+    columnDefs = list(
+      list(className = 'dt-center', targets = "_all"),
+      list(width = '150px', targets = 0),     
+      list(width = '150px', targets = 1)      
+    ),
+    initComplete = JS(
+      "function(settings, json) {",
+      "$(this.api().table().header()).css({'background-color': '#D4D4D4', 'color': 'black'});",
+      "$(this.api().table().header()).find('th').css('text-align', 'center');",
+      "}"
+    )
+  )
+) %>%
+  formatStyle(
+    columns = 1, 
+    fontStyle = 'italic'
+    )
+
+
+mlst_tbl 
+
+
+```
+
+
+```{r no_mlst_table, echo=FALSE, message=FALSE, warning=FALSE}
+# List existing sample_id not in the MLST table
+no_mlst <- sample_name_clean[!(sample_name_clean %in% mlst_df$sample_id)]
+
+# Only proceed if there are actually samples missing from MLST
+if (length(no_mlst) > 0) {
+  search_ids <- paste(no_mlst, batch_name_clean, sep = "_")
+  
+  filtered_wgs <- wgs_df[wgs_df$sample_id %in% search_ids, ]
+  
+  if (nrow(filtered_wgs) > 0) {
+    # Build the data frame using the filtered results
+    df_no_mlst <- data.frame(
+      sample_id = sub("(.*)_[^_]*$", "\\1", filtered_wgs$sample_id),
+      wgs_id    = filtered_wgs$wgs_id,
+      species   = "No MLST result"
+    )
+    
+    # Generate and print table
+    colnames(df_no_mlst) <- c('Sample ID', 'WGS ID', 'Species/Remarks')
+  
+    # --- Create Custom Header (equivalent to add_header_above) ---
+    sketch <- htmltools::withTags(table(
+      class = 'display',
+      thead(
+        tr(
+          th(colspan = ncol(df_no_mlst), 
+             style = "font-style: bold; font-size: 16px; color: black;", 
+             "Summary of Sample with No MLST Result")
+          ),
+        tr(
+          lapply(colnames(df_no_mlst), th, style = "text-align: center;")
+          )
+        )
+    ))
+    
+    
+    # Render Interactive Table
+    tbl_no_mlst <- datatable(df_no_mlst,
+      container = sketch,                      
+      extensions = 'Buttons',
+      rownames = FALSE,
+      class = 'cell-border stripe',
+      options = list(
+        dom = 'lBfrtip',
+        buttons = c('copy', 'csv', 'excel'),
+        pageLength = 10,
+        scrollX = TRUE,
+        columnDefs = list(
+          list(className = 'dt-center', targets = "_all")
+        ),
+        initComplete = JS(
+          "function(settings, json) {",
+          "$(this.api().table().header()).css({'background-color': '#D4D4D4', 'color': 'black'});",
+          "$(this.api().table().header()).find('th').css('text-align', 'center');",
+          "}"
+        )
+      )
+    )
+    
+
+    tbl_no_mlst
+    }
+  
+} 
+
+```
+
+```{r amr_genes ,echo=FALSE, message=FALSE, warning=FALSE}
+wgs_species <- wgs_df %>% select(sample_id, wgs_id)
+
+df_amrfinderplus1 <- df_amrfinderplus
+names(df_amrfinderplus1) <- tolower(names(df_amrfinderplus1))
+names(df_amrfinderplus1)[names(df_amrfinderplus1) == 'name'] <- 'sample_id'
+names(df_amrfinderplus1)[names(df_amrfinderplus1) == 'element symbol'] <- 'element_symbol'
+
+df_amrfinderplus1 <- df_amrfinderplus1 %>%
+  mutate(sample_id = gsub("-", "_", sample_id, fixed = TRUE)) %>%
+  inner_join(wgs_species, by = "sample_id") %>%
+  mutate(wgs_id = gsub("quasi", "", wgs_id, fixed = TRUE)) %>%
+  filter(grepl(batch_name_clean, sample_id)) %>%
+  mutate(sample_id = strip_batch(sample_id))
+
+amr_genes_species <- unique(df_amrfinderplus1$wgs_id)
+amr_genes_list <- letter_and_list(amr_genes_species)
+
+# One summary table per species, keyed by species name (replaces the
+# original assign()/get()-by-string-name pattern with a plain named list).
+amr_gene_tables <- list()
+
+for (sp in amr_genes_species) {
+  sample_ids <- df_amrfinderplus1$sample_id[df_amrfinderplus1$wgs_id == sp]
+
+  amr_genes_df <- df_amrfinderplus1 %>%
+    mutate(
+      subclass = gsub("NA", "", subclass, fixed = TRUE),
+      Newcols = gsub("/", "/ ", paste(type, subclass), fixed = TRUE)
+    ) %>%
+    select(sample_id, Newcols, element_symbol) %>%
+    group_by(Newcols, sample_id) %>%
+    summarize(Concat = paste0(element_symbol, collapse = ", "), .groups = "drop") %>%
+    pivot_wider(names_from = Newcols, values_from = Concat)
+
+  amr_gene_tables[[sp]] <- amr_genes_df[amr_genes_df$sample_id %in% sample_ids, ]
+}
+
+```
+
+$\\$ $\\$ $\\$
+
+
+### **AMR PREDICTION RESULTS**
+
+***Table 5.*** **Summary of AMR genes present among of** ***`r paste(amr_genes_list, collapse = ", ")`***
+```{r amr_gene_tables, echo=FALSE, message=FALSE, warning=FALSE}
+# 1. Create a list to store all table outputs
+amr_outputs <- list()
+
+for (idx in seq_along(amr_gene_tables)) {
+  df_orig <- amr_gene_tables[[idx]]
+
+  # Work on a copy of wgs_species to avoid modifying the original in each iteration
+  wgs_species_1 <- wgs_species
+  wgs_species_1$sample_id <- sub("(.*)_[^_]*$", "\\1", wgs_species_1$sample_id)
+
+  # Merge and clean
+  df <- merge(df_orig, wgs_species_1, by = "sample_id")
+  names(df)[names(df) == 'wgs_id'] <- 'species'
+  names(df)[names(df) == 'sample_id'] <- 'Sample ID'
+  
+  df <- df %>% relocate(species, .after = `Sample ID`)
+  df <- df[, colSums(is.na(df)) < nrow(df)]
+  
+  # Get unique species value for the header
+  species_val <- unique(df$species)[1]
+  species_val <- paste0(letters[idx], ") ", species_val)
+  
+  # Subset to remove species column as it goes in the 'sketch' header
+  df_subset <- subset(df, select = -c(species))
+  
+  # --- Create Custom Header ---
+  sketch <- htmltools::withTags(table(
+    class = 'display',
+    thead(
+      tr(
+        th(colspan = ncol(df_subset), 
+           style = "font-style: italic; font-size: 16px; border-bottom: 1px solid #111; text-align: left;", 
+           species_val)
+      ),
+      tr(
+        lapply(colnames(df_subset), th, style = "text-align: center;")
+      )
+    )
+  ))
+
+  # --- Create the interactive table ---
+  tbl <- datatable(df_subset,
+    container = sketch,
+    extensions = 'Buttons',
+    rownames = FALSE,
+    class = 'cell-border stripe',
+    options = list(
+      dom = 'lBfrtip',
+      buttons = c('copy', 'csv', 'excel', 'print'),
+      pageLength = 10,
+      scrollX = TRUE,
+      columnDefs = list(
+        list(className = 'dt-center', targets = "_all"),
+        list(width = '200px', targets = "_all")
+      ),
+      initComplete = JS(
+        "function(settings, json) {",
+        "$(this.api().table().header()).find('tr:eq(1) th').css({",
+        "  'background-color': '#D4D4D4',",
+        "  'color': 'black',", # Added missing comma
+        "  'text-align': 'center'", # Added centering
+        "});",
+        "}"
+      )
+    )
+  )
+  
+  # 2. Store the table and spacing in the list
+  # We use tags$div with style to replace \vspace
+  amr_outputs[[idx]] <- tagList(
+    tbl,
+    tags$div(style = "margin-bottom: 30px;") 
+  )
+}
+
+# 3. Render everything at once
+tagList(amr_outputs)
+
+```
+
+
+
+`
+```{r no_amr_genes_table ,echo=FALSE, message=FALSE, warning=FALSE}
+# Filter for samples missing from the AMR results
+no_amr_ids <- wgs_df$wgs_id[!(wgs_df$wgs_id %in% df_amrfinderplus1$wgs_id)]
+
+# Remove quasi values
+no_amr_ids <- no_amr_ids[!grepl('quasi', no_amr_ids)]
+
+if (length(no_amr_ids) != 0) {
+  
+  # Logic to align sample_id with the filtered wgs_ids
+  # Ensure the lengths of these vectors match before creating the dataframe
+  sample_id <- wgs_df$sample_id[wgs_df$wgs_id %in% no_amr_ids]
+  wgs_id    <- no_amr_ids
+  remarks   <- "No AMR determinant detected"
+  
+  # Clean up sample_id (remove batch suffix as in your other tables)
+  sample_id_clean <- sub("(.*)_[^_]*$", "\\1", sample_id)
+  
+  df_no_amr <- data.frame(
+    `Sample ID` = sample_id_clean, 
+    `WGS ID` = wgs_id, 
+    `Remarks` = remarks,
+    check.names = FALSE
+  )
+  
+  # Create Interactive Table
+  no_amr_table <- datatable(df_no_amr,
+    rownames = FALSE,
+    class = 'cell-border stripe',
+    options = list(
+      dom = 't',             # 't' only shows the table (no search/paging) for small summaries
+      columnDefs = list(list(className = 'dt-center', targets = "_all")),
+      initComplete = JS(
+        "function(settings, json) {",
+        "$(this.api().table().header()).css({'background-color': '#D4D4D4', 'color': 'black'});",
+        "}"
+      )
+    )
+  )
+  
+  # Final call to display the widget
+  no_amr_table
+}
+
+```
 

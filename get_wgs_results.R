@@ -115,7 +115,7 @@ for (i in seq_len(nrow(special_orgs))) {
   matches <- grep(special_orgs$pattern[i], wgs_result_df$sample_id, value = TRUE)
   if (length(matches) > 0) {
     arsrl_result_df <- arsrl_result_df %>%
-      add_row(sample_id = strip_suffix(matches), arsrl_org = special_orgs$arsrl_org[i])
+      add_row(sample_id = strip_batch_suffix(matches), arsrl_org = special_orgs$arsrl_org[i])
   }
 }
 
@@ -131,6 +131,11 @@ if (nrow(wgs_result_df) != 0) {
   rmarkdown::render(
     "wgs_qc_report_pdf.Rmd",
     output_file = paste0("reports/ARSRL_WGS_QC_report_", batch_code, ".pdf")
+  )
+
+  rmarkdown::render(
+    "wgs_qc_report_html.Rmd",
+    output_file = paste0("reports/ARSRL_WGS_QC_report_", batch_code, ".html")
   )
 
 } else {
