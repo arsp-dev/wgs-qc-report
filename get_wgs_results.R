@@ -126,3 +126,16 @@ if (length(no_referred_data_id) > 0) {
     add_row(sample_id = no_referred_data_id, arsrl_org = "No Referred Data")
 }
 
+#--- Render report ---
+if (nrow(wgs_result_df) != 0) {
+  rmarkdown::render(
+    "wgs_qc_report_pdf.Rmd",
+    output_file = paste0("reports/ARSRL_WGS_QC_report_", batch_code, ".pdf")
+  )
+
+} else {
+  cat("No file found")
+}
+
+
+
