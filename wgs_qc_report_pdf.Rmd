@@ -134,7 +134,7 @@ wgs_df <- wgs_result_df %>%
   ))
 
 # --- load organism code reference file ---
-org_df <- read_xlsx(here("data_files", "whonet_codes_2024.xlsx"), "ORGANISM") %>%
+org_df <- read_xlsx(here("data_files/", "whonet_codes_2024.xlsx"), "ORGANISM") %>%
   select(ORG_ARS, ORGANISM_name) %>%
   rename(wgs_id = ORGANISM_name, org_code = ORG_ARS)
 
@@ -595,7 +595,7 @@ genus_df <- assembly_qc %>%
   filter(with_species == FALSE)
 
 # --- Read qualibact reference metrics ---
-qualibact_data <- read_csv(here("data_files","qualibact_filtered_metrics_07292026.csv")) %>%
+qualibact_data <- read_csv(here("data_files/","qualibact_filtered_metrics_07292026.csv")) %>%
 
 if (nrow(genus_df) != 0) {
   # Create the regex pattern
