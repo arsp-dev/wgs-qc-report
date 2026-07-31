@@ -1,0 +1,112 @@
+---
+title: "WGS Quality Control Report"
+output: 
+  html_document:
+    self_contained: true
+mainfont: Helvetica
+papersize: a4
+---
+
+```{css, echo=FALSE}
+.main-container {
+  max-width: 1300px !important;
+  margin-left: auto;
+  margin-right: auto;
+}
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.pos = 'H')
+```
+
+```{r load library, echo = FALSE, warning = FALSE, message = FALSE}
+# Core Tidyverse (includes dplyr, readr, stringr, ggplot2, tidyr, purrr, tibble, forcats)
+library(tidyverse)
+
+# Data Import / Export
+library(readxl)
+library(writexl)
+library(openxlsx) # Added if you specifically need openxlsx::write.xlsx
+
+# Tables & Formatting
+library(knitr)
+library(kableExtra)
+library(DT)
+library(htmltools)
+
+# Plotting & Visualization
+library(RColorBrewer)
+library(scales)
+library(plotly)
+
+# Conflict Resolution
+library(conflicted)
+conflicts_prefer(openxlsx::write.xlsx)
+conflicts_prefer(dplyr::filter)
+```
+
+```{r helpers, echo = FALSE, warning = FALSE, message = FALSE}
+# Remove the trailing "_<batch>" suffix appended to sample IDs
+strip_batch <- function(x) sub("(.*)_[^_]*$", "\\1", x)
+
+# "a) X, b) Y, and c) Z" style list, used for narrative captions
+letter_and_list <- function(x) {
+  out <- paste0(letters[seq_along(x)], ") ", x)
+  if (length(out) > 1) out[length(out)] <- paste("and", out[length(out)])
+  out
+}
+
+# Color a PASSED / WARNING / FAILED status value for kable/LaTeX output
+color_status <- function(x) {
+  case_when(
+    x == "PASSED"  ~ cell_spec(x, background = "#006b54", color = "white"),
+    x == "WARNING" ~ cell_spec(x, background = "#ffd858"),
+    x == "FAILED"  ~ cell_spec(x, background = "#D2042D", color = "white"),
+    TRUE ~ x
+  )
+}
+
+# Wrap flagged cells in a red LaTeX colorbox.
+# status_cols is a named vector: names are the columns in `status_df` that
+# hold "FAILED"/"PASSED", values are the matching column to highlight in
+# `value_df`. Matching is by row position, mirroring how the original
+# per-row loops worked.
+highlight_failed <- function(value_df, status_df, status_cols) {
+  for (status_col in names(status_cols)) {
+    val_col <- status_cols[[status_col]]
+    rows <- which(status_df[[status_col]] == "FAILED")
+    for (i in rows) {
+      value_df[i, val_col] <- paste0(
+        "\\colorbox{myred}{\\textcolor{white}{\\textbf{", value_df[i, val_col], "}}}"
+      )
+    }
+  }
+  value_df
+}
+
+# Standard PASSED/WARNING/FAILED legend used on the QC tables
+pass_fail_legend <- c(
+  "\\\\colorbox{mygreen}{\\\\textcolor{white}{PASSED}}", "  |  ",
+  "\\\\colorbox{myyellow}{WARNING}", "  |  ",
+  "\\\\colorbox{myred}{\\\\textcolor{white}{FAILED}}"
+)
+
+# Render a QC table: switches to a repeating longtable once it's too long
+# for one page (>= longtable_threshold rows), otherwise scales to fit.
+render_qc_table <- function(df, legend, italic_col = 3, longtable_threshold = 30) {
+  long <- nrow(df) >= longtable_threshold
+  df %>%
+    kable(format = "latex", booktabs = TRUE, escape = FALSE, align = "c",
+          row.names = FALSE, longtable = long) %>%
+    kable_styling(
+      latex_options = if (long) c("repeat_header", "scale_down") else c("scale_down", "hold_position"),
+      font_size = if (long) 7 else NULL
+    ) %>%
+    row_spec(0, background = "#D4D4D4", bold = TRUE) %>%
+    column_spec(italic_col, italic = TRUE) %>%
+    footnote(general = legend, general_title = "Legend:", footnote_as_chunk = TRUE, escape = FALSE)
+}
+```
+
