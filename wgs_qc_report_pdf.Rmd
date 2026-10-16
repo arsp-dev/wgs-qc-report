@@ -1200,9 +1200,11 @@ overall_result <- overall_result %>%
     raw_reads_result == "WARNING" & assembly_result == "PASSED" ~ "PASSED",
     raw_reads_result == "FAILED" | assembly_result == "FAILED" ~ "FAILED",
     .default = ""
-  )) %>%
+    ),
+    experiment_name = WGS_exp_name) %>%  # Add new column - Experiment Name
   relocate(wgs_id, .before = species_abundance) %>%
   relocate(final_result, .after = wgs_id) %>%
+  relocate(experiment_name, .before = wgs_id) %>%
   select(-iso_num)
   
 #sheet_write(data = overall_result, ss = sheet_id, sheet = "result")
