@@ -19,7 +19,7 @@ conflicts_prefer(dplyr::filter)
 
 
 # --- Set Working Directory ----
-setwd("E:/DMU Projects/wgs-qc")
+setwd("E:/DMU Projects/wgs-qc-report")
 
 
 

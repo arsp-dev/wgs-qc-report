@@ -345,6 +345,18 @@ qc_listing_df <- qc_listing_df %>%
   select(-Genus, -concordant) %>%
   mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id))
 
+# Escape LaTeX special characters in all text columns
+escape_tex <- function(x) {
+  x <- gsub("\\", "\\textbackslash{}", x, fixed = TRUE)
+  x <- gsub("([#$%&_{}])", "\\\\\\1", x)
+  x <- gsub("~", "\\textasciitilde{}", x, fixed = TRUE)
+  x <- gsub("^", "\\textasciicircum{}", x, fixed = TRUE)
+  x
+}
+
+qc_listing_df <- qc_listing_df %>%
+  mutate(across(where(is.character), escape_tex))
+
 
 # Rename and reorder columns
 colnames(qc_listing_df) <- c("Sample ID", "WGS", "ARSRL", "Isolate No.", "Description", "Index")
