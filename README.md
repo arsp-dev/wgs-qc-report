@@ -68,4 +68,4 @@ reports/ARSRL_WGS_QC_report_<batch_code>.html
 ```
 
 ## Known issues to check before relying on this as documentation
-- The hardcoded `qualibact_filtered_metrics_07292026.csv` filename will break once a newer metrics file is used.
+- The hardcoded Qualibact Metrics filename will break once a newer metrics file is used.
