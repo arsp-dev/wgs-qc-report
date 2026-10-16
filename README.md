@@ -24,7 +24,7 @@ The two `.Rmd` files are **not standalone** — they expect several data frames 
 ## What you'll need to run this
 
 ### 1. Credentials / access
-- **Google Sheets access** for sheet ID `1OUnMF78Nftwu442t7N3Ly6JoEW8Wmk5z9cNY7b_KOzY` — `googlesheets4` will trigger an OAuth flow the first time (`gs4_auth()`), or needs a cached token.
+- **Google Sheets access** for sheet ID will trigger an OAuth flow the first time (`gs4_auth()`), or needs a cached token.
 - **`referred_db` PostgreSQL credentials**, set as environment variables (e.g. in `.Renviron`):
   ```
   REFERRED_DB_HOST=
