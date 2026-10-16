@@ -49,10 +49,15 @@ knitr::opts_chunk$set(fig.pos = 'H')
 library(tidyverse)
 library(knitr)
 library(readxl)
+library(dplyr)
 library(kableExtra)
+library(RColorBrewer)
+library(scales)
 library(readr)
 library(writexl)
 library(conflicted)
+library(stringr)
+library(ggplot2)
 library(plotly)
 library(webshot2)
 
@@ -60,90 +65,35 @@ conflicts_prefer(openxlsx::write.xlsx)
 conflicts_prefer(dplyr::filter)
 ```
 
-```{r helpers, echo = FALSE, warning = FALSE, message = FALSE}
-# Remove the trailing "_<batch>" suffix appended to sample IDs
-strip_batch <- function(x) sub("(.*)_[^_]*$", "\\1", x)
 
-# "a) X, b) Y, and c) Z" style list, used for narrative captions
-letter_and_list <- function(x) {
-  out <- paste0(letters[seq_along(x)], ") ", x)
-  if (length(out) > 1) out[length(out)] <- paste("and", out[length(out)])
-  out
-}
 
-# Color a PASSED / WARNING / FAILED status value for kable/LaTeX output
-color_status <- function(x) {
-  case_when(
-    x == "PASSED"  ~ cell_spec(x, background = "#006b54", color = "white"),
-    x == "WARNING" ~ cell_spec(x, background = "#ffd858"),
-    x == "FAILED"  ~ cell_spec(x, background = "#D2042D", color = "white"),
-    TRUE ~ x
-  )
-}
-
-# Wrap flagged cells in a red LaTeX colorbox.
-# status_cols is a named vector: names are the columns in `status_df` that
-# hold "FAILED"/"PASSED", values are the matching column to highlight in
-# `value_df`. Matching is by row position, mirroring how the original
-# per-row loops worked.
-highlight_failed <- function(value_df, status_df, status_cols) {
-  for (status_col in names(status_cols)) {
-    val_col <- status_cols[[status_col]]
-    rows <- which(status_df[[status_col]] == "FAILED")
-    for (i in rows) {
-      value_df[i, val_col] <- paste0(
-        "\\colorbox{myred}{\\textcolor{white}{\\textbf{", value_df[i, val_col], "}}}"
-      )
-    }
-  }
-  value_df
-}
-
-# Standard PASSED/WARNING/FAILED legend used on the QC tables
-pass_fail_legend <- c(
-  "\\\\colorbox{mygreen}{\\\\textcolor{white}{PASSED}}", "  |  ",
-  "\\\\colorbox{myyellow}{WARNING}", "  |  ",
-  "\\\\colorbox{myred}{\\\\textcolor{white}{FAILED}}"
-)
-
-# Render a QC table: switches to a repeating longtable once it's too long
-# for one page (>= longtable_threshold rows), otherwise scales to fit.
-render_qc_table <- function(df, legend, italic_col = 3, longtable_threshold = 30) {
-  long <- nrow(df) >= longtable_threshold
-  df %>%
-    kable(format = "latex", booktabs = TRUE, escape = FALSE, align = "c",
-          row.names = FALSE, longtable = long) %>%
-    kable_styling(
-      latex_options = if (long) c("repeat_header", "scale_down") else c("scale_down", "hold_position"),
-      font_size = if (long) 7 else NULL
-    ) %>%
-    row_spec(0, background = "#D4D4D4", bold = TRUE) %>%
-    column_spec(italic_col, italic = TRUE) %>%
-    footnote(general = legend, general_title = "Legend:", footnote_as_chunk = TRUE, escape = FALSE)
-}
-```
 
 ```{r load-data, echo = FALSE, warning = FALSE, message = FALSE}
-# --- rename species column to wgs_id and fill in genus-only IDs ---
-wgs_df <- wgs_result_df %>%
-  rename(wgs_id = species) %>%
-  mutate(wgs_id = case_when(
-    wgs_id == "Acinetobacter" ~ "Acinetobacter baumannii",
-    wgs_id == "Escherichia"   ~ "Escherichia coli",
-    TRUE ~ wgs_id
-  ))
+# --- rename species column to wgs_org ---
+wgs_df <- wgs_result_df %>% rename(wgs_id = species)
+
+# --- complete wgs_org  ---
+wgs_df$wgs_id <- ifelse(wgs_df$wgs_id == "Acinetobacter", "Acinetobacter baumannii", 
+                         ifelse(wgs_df$wgs_id == "Escherichia", "Escherichia coli", wgs_df$wgs_id))
 
 # --- load organism code reference file ---
-org_df <- read_xlsx(here("data_files/", "whonet_codes_2024.xlsx"), "ORGANISM") %>%
-  select(ORG_ARS, ORGANISM_name) %>%
-  rename(wgs_id = ORGANISM_name, org_code = ORG_ARS)
+org_df <- read_xlsx("data_files/whonet_codes_2024.xlsx", "ORGANISM") %>%
+  select(ORG_ARS, ORGANISM_name) %>% 
+  rename(wgs_id = ORGANISM_name)
 
-# --- merge & clean organism code ---
+# --- merge dataframes ---
+wgs_df <- merge(wgs_df, org_df, by = "wgs_id", all.x = TRUE)
+
+
+# --- rename ORG_ARS column to ORG ---
+wgs_df <- wgs_df %>% rename(org_code = ORG_ARS)
+
+# --- Clean organism name ---
 wgs_df <- wgs_df %>%
-  left_join(org_df, by = "wgs_id") %>%
   mutate(
     org_code_clean = case_when(
-      wgs_id %in% c("Escherichia/Shigella", "Escherichia coli/Shigella") ~ "eco",
+      wgs_id == "Escherichia/Shigella" ~ "eco",
+      wgs_id == "Escherichia coli/Shigella" ~ "eco",
       str_detect(wgs_id, "Salmonella enterica") ~ "sat",
       str_detect(wgs_id, "Salmonella") ~ "sal",
       str_detect(wgs_id, "Streptococcus pseudopneumoniae") ~ "spn",
@@ -166,9 +116,12 @@ wgs_df <- wgs_df %>%
 
 ```
 
+
+
+
 ```{r sample-sheet, echo = FALSE, warning = FALSE, message = FALSE}
 # --- Read samplesheet ---
-wgs_samplesheet <- read_csv(here(paste0("data_files/", get_samplesheet, ".csv")))
+wgs_samplesheet <- read_csv(paste0("data_files/", get_samplesheet, ".csv")) 
 
 # --- Get experiment name ---
 WGS_exp_name <- unique(wgs_samplesheet$experiment_name)
@@ -177,13 +130,15 @@ WGS_exp_name <- unique(wgs_samplesheet$experiment_name)
 batch_name_clean <- gsub("[[:punct:]]", "", batch_code)
 
 # --- Modify dataframe ---
-wgs_samplesheet <- wgs_samplesheet %>%
-  rename_with(tolower) %>%
+wgs_samplesheet <- wgs_samplesheet%>%
+  rename_with(tolower) %>%              # lowercase column names
   mutate(
-    sample_id = str_replace_all(toupper(sample_id), "-", "_"),
-    sample_id = paste(sample_id, batch_name_clean, sep = "_")
+    sample_id = toupper(sample_id),     # uppercase sample_id
+    sample_id = str_replace_all(sample_id, "-", "_"),  # replace "-" with "_"
+    batch_name_clean = str_remove_all(batch_code, "[[:punct:]]"), # clean batch code
+    sample_id = paste(sample_id, batch_name_clean, sep = "_")      # append batch
   ) %>%
-  select(sample_id, description, index_plate_well)
+  select(sample_id, description, index_plate_well)  # optional: remove helper column
 
 ```
 
@@ -198,53 +153,74 @@ wgs_samplesheet <- wgs_samplesheet %>%
 \renewcommand{\arraystretch}{1.2}
 ```{r wgs-data, echo = FALSE, warning = FALSE, message = FALSE}
 # --- Subset wgs_df ---
-wgs_id_df <- wgs_df %>% select(sample_id, wgs_id)
+wgs_id_df <- subset(wgs_df, select = c('sample_id','wgs_id'))
+
+wgs_samplesheet_subset <- subset(wgs_samplesheet, select = c('sample_id','description'))
+
 
 # --- paste batch number to arsrl result sample_id ---
 arsrl_id_df <- arsrl_result_df %>%
-  mutate(sample_id = paste(sample_id, batch_name_clean, sep = "_"),
-    iso_num = row_number())
+  mutate(sample_id = paste(sample_id, batch_name_clean, sep = "_"))
 
-# --- merge arsrl result and samplesheet ---
-arsrl_result_merge <- unique(arsrl_id_df) %>%
-  left_join(unique(wgs_samplesheet), by = "sample_id")
 
-# --- Merge WGS and ARSRL results, restore original WGS sample order ---
-qc_listing_df <- unique(wgs_id_df) %>%
-  left_join(unique(arsrl_result_merge), by = "sample_id")
+# --- Add isolate numbers ---
+arsrl_id_df$iso_num <- seq_len(nrow(arsrl_id_df))
 
+
+# --- merge arsrl result  and samplesheet ---
+arsrl_result_merge <- merge(unique(arsrl_id_df), unique(wgs_samplesheet), by = "sample_id", all.x= TRUE)
+
+
+# --- Merge WGS and ARSRL results ---
+qc_listing_df <- merge(
+  unique(wgs_id_df), 
+  unique(arsrl_result_merge), 
+  by = "sample_id", 
+  all.x = TRUE
+)
+
+# Preserve original WGS order
 qc_listing_df <- qc_listing_df[match(wgs_result_df$sample_id, qc_listing_df$sample_id), ]
+
+# Fill missing WGS IDs
 qc_listing_df$wgs_id[is.na(qc_listing_df$wgs_id)] <- "Not Identified"
 
 # --- Handle samples with no WGS results ---
 wgs_no_result <- wgs_samplesheet[!wgs_samplesheet$sample_id %in% wgs_df$sample_id, ]
 
-
 if (nrow(wgs_no_result) > 0) {
   qc_listing_df$description <- ifelse(
     is.na(qc_listing_df$description),
-    wgs_id_df$description[match(
+    wgs_samplesheet_subset$description[match(
       paste0(wgs_no_result$sample_id, "_", batch_name_clean),
-      wgs_id_df$sample_id
+      wgs_samplesheet_subset$sample_id
     )],
     qc_listing_df$description
   )
 }
 
-# --- Concordance check and assign isolate number---
+
+# --- Concordance check ---
 qc_listing_df <- qc_listing_df %>%
+  rowwise() %>%
   mutate(
-    Genus = word(arsrl_org, 1),
-    concordant = case_when(
-      arsrl_org == "No Referred Data" ~ TRUE,
-      wgs_id == "Not Identified"      ~ TRUE,
-      TRUE ~ str_detect(wgs_id, Genus),
-    ),
-    arsrl_org = if_else(concordant, arsrl_org, paste0(arsrl_org, " (x)"))
-  )
+    Genus = strsplit(as.character(arsrl_org), " ")[[1]][1],
+    concordant = ifelse(wgs_id != "Not Identified", grepl(Genus, wgs_id), TRUE),
+    concordant = ifelse(arsrl_org == "No Referred Data", TRUE, concordant)
+  ) %>%
+  ungroup()
+
+# Append (x) to non-concordant ARSRL results
+qc_listing_df$arsrl_org <- ifelse(
+  qc_listing_df$concordant,
+  qc_listing_df$arsrl_org,
+  paste0(qc_listing_df$arsrl_org, " (x)")
+)
 
 # Match concordance back to WGS df
 wgs_df$concordant <- qc_listing_df$concordant[match(wgs_df$sample_id, qc_listing_df$sample_id)]
+
+
 
 ```
 
@@ -307,6 +283,7 @@ fig <- plotly::plot_ly(
   type = 'sunburst',
   branchvalues = 'total',
   marker = list(colors = ~color),
+  # Explicitly setting font to bold
   insidetextfont = list(size = 15),
   outsidetextfont = list(size = 15),
   hovertemplate = "<b>%{label}</b><br>Value: %{value}<extra></extra>"
@@ -315,23 +292,27 @@ fig <- plotly::plot_ly(
 fig <- fig %>% plotly::layout(
   title = list(
     font = list(size = 10),
-    y = 0.05,
+    y = 0.05,       # Lift it slightly off the absolute edge
     x = 0.5,
     xanchor = 'center',
-    yanchor = 'bottom'
+    yanchor = 'bottom' # Anchor the bottom of the text
   ),
+  # Increase 'b' (bottom) margin to at least 50-80 to fit the text
   margin = list(l = 0, r = 0, b = 0, t = 40) 
 )
 
 
+
 invisible(capture.output(
   plotly::orca(fig, "fig.png", 
-             width = 450, 
-             height = 450,
+             width = 520, 
+             height = 520,
              mathjax = NULL)
 ))
 
 knitr::include_graphics("fig.png")
+
+
 
 ```
 
@@ -341,33 +322,45 @@ knitr::include_graphics("fig.png")
 
 
 
+$\\$
 \newpage
+\begin{landscape}
+\fontsize{7}{8}
+\selectfont
+\renewcommand{\arraystretch}{1.2}
 
 \small\textbf{\emph{Table 1.} Concordance analysis of bacterial identification of sequenced isolates.}
 
 ```{r qc-listing, echo = FALSE, warning = FALSE, message = FALSE}
 # --- Identify failed WGS sample names ---
 raw_read_failed <- df_bactscout_mod$name[df_bactscout_mod$a_final_status == "FAILED"]
+
+  
+# --- Get row numbers in qc_listing_df where sample_id matches any failed sample ---
 failure_color <- which(qc_listing_df$sample_id %in% raw_read_failed)
+
 
 # --- Clean up ---
 qc_listing_df <- qc_listing_df %>%
   select(-Genus, -concordant) %>%
-  mutate(sample_id = strip_batch(sample_id))
+  mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id))
+
 
 # Rename and reorder columns
 colnames(qc_listing_df) <- c("Sample ID", "WGS", "ARSRL", "Isolate No.", "Description", "Index")
 qc_listing_df <- qc_listing_df[, c("Isolate No.", "Sample ID", "Description", "Index", "ARSRL", "WGS")]
 
+
 # --- Generate formatted table ---
 qc_listing_df %>%
   kable(booktabs = TRUE, align = "c", escape = FALSE, row.names = FALSE) %>%
   column_spec(1, width = "1.5cm") %>%
-  column_spec(2, width = "2.5cm") %>%
-  column_spec(3, width = "1.5cm") %>%
+  #column_spec(2, width = "2.5cm") %>%
+  column_spec(2, width = "5cm") %>%
+  column_spec(3, width = "4.5cm") %>%
   column_spec(4, width = "1.5cm") %>%
-  column_spec(5, width = "4.3cm", italic = TRUE) %>%
-  column_spec(6, width = "4.3cm", italic = TRUE) %>%
+  column_spec(5, width = "5cm", italic = TRUE) %>%
+  column_spec(6, width = "5cm", italic = TRUE) %>%
   row_spec(failure_color, background = "#FD7979") %>%
   row_spec(0, background = "#D4D4D4", bold = TRUE, align = "c") %>%
   footnote(
@@ -381,28 +374,30 @@ qc_listing_df %>%
     escape = FALSE
   )
 
+
 ```
 
 
-```{r low-reads, echo=FALSE, message=FALSE, warning=FALSE,results='asis'}
-# --- filter dataframe based on the sample_id not present in the WGS samplesheet ---
-wgs_lowreads <- wgs_samplesheet[!(wgs_samplesheet$sample_id %in% wgs_df$sample_id), ] %>%
-  select(sample_id, description)
 
-if (nrow(wgs_lowreads) > 0) {
-  lowreads_table <- wgs_lowreads %>%
-    mutate(remarks = "low read count",
-           sample_id = strip_batch(sample_id))
-  colnames(lowreads_table) <- c('Sample ID','Description','Remarks')
+```{r low-reads, echo=FALSE, message=FALSE, warning=FALSE,results='asis'}
+#filter dataframe based on the sample_id not present in the WGS samplesheet
+wgs_lowreads <- wgs_samplesheet[!(wgs_samplesheet$sample_id %in% wgs_df$sample_id), ]
+wgs_lowreads <- subset(wgs_lowreads, select = c('sample_id','description'))
+
+if (nrow(wgs_lowreads != 0)){
+  lowreads_table <- wgs_lowreads
+  lowreads_table$remarks <- c("low read count")
+  #remove batch name in sample_id
+  lowreads_table$sample_id <- sub("(.*)_[^_]*$", "\\1", lowreads_table$sample_id)
+  colnames(lowreads_table) <- c('Sample ID','Description','Remarks') 
   
-  lowreads_table %>%
-    kable("latex", booktabs = TRUE, align = "c") %>%
+  kable(lowreads_table,  "latex", booktabs = T, align = "c") %>%
     kable_styling(position = "left") %>%
     column_spec(1, width = "3cm") %>%
     column_spec(2, width = "3cm") %>%
     column_spec(3, width = "7cm") %>%
     add_header_above(c("Sample excluded in the analysis" = 3), align = "l", bold = TRUE) %>%
-    row_spec(0, background = "#D4D4D4", bold = TRUE, align = "c")
+    row_spec(0, background = "#D4D4D4",bold = TRUE,align = "c")
 }
 
 ```
@@ -410,35 +405,65 @@ if (nrow(wgs_lowreads) > 0) {
 
 $\\$
 \newpage
-\begin{landscape}
-\fontsize{7}{8}
-\selectfont
-\captionsetup[table]{labelformat=empty}
-\renewcommand{\arraystretch}{1.2}
 \section*{RAW READS QC}
-
 \small\textbf{\emph{Table 2.} Summary of raw reads quality control analysis.}
 
-
-
 ```{r bactscout-df-value, echo = FALSE, warning = FALSE, message = FALSE}
-# --- Per-sample raw-read status metrics ---
+# --- Create new column to check final status with warning status and list column indices with failed results ---
 bactscout_df_result <- df_bactscout_mod %>%
   select(name, species, Contamination = contamination_message,`Coverage (Qualibact)` = coverage_estimate_qualibact_status, `Duplication Rate` = duplication_status, 
         `GC Content` = gc_content_status, `MLST (ST)` = mlst_status, `Read Length` = read_length_status, `Read Q30` = read_q30_status, a_final_status) %>%
   mutate(Contamination = ifelse(Contamination == "OK", "PASSED", "FAILED"))
 
 
-metric_cols <- c("Contamination", "Coverage (Qualibact)", "Duplication Rate",
-                  "GC Content", "MLST (ST)", "Read Length", "Read Q30")
-
-bactscout_df_result$failed_cols <- apply(bactscout_df_result[metric_cols], 1, function(row) {
-  paste(metric_cols[row == "FAILED"], collapse = ", ")
+bactscout_df_result$failed_idx <- apply(bactscout_df_result, 1, function(row) {
+  if (row["a_final_status"] == "FAILED") {
+    # Get indices of columns with FAILED
+    failed_cols <- which(row[-c(1,2,10)] == "FAILED") # exclude name and species
+    # Adjust index to match original dataframe
+    failed_cols <- failed_cols + 3
+    paste(failed_cols, collapse = ", ")
+  } else {
+    "" 
+  }
 })
-bactscout_df_result$failed_cols[bactscout_df_result$a_final_status != "FAILED"] <- ""
+
+
+#bactscout_df_result$warning_idx <- apply(bactscout_df_result, 1, function(row) {
+#  if (row["a_final_status"] == "WARNING") {
+#    # Get indices of columns with FAILED
+#    warning_cols <- which(row[-c(1,2,10)] == "WARNING") # exclude name and species
+#    # Adjust index to match original dataframe
+#    warning_cols <- warning_cols + 3
+#    paste(warning_cols, collapse = ", ")
+#  } else {
+#    "" 
+#  }
+#})
+
+
+bactscout_df_result$failed_cols <- apply(bactscout_df_result, 1, function(row) {
+  if (row["a_final_status"] == "FAILED") {
+    warning_cols <- names(row)[which(row[-c(1,2,10)] == "FAILED") + 2] # adjust for original df
+    if (length(warning_cols) == 0) {
+      ""
+    } else {
+      paste(warning_cols, collapse = ", ")
+    }
+
+  } else {
+    "" 
+  }
+})
+
+
 
 # --- List sample without bactscout result ---
-no_bactscout_result <- setdiff(sample_name, df_bactscout_mod$name) %>% strip_batch()
+no_bactscout_result <- setdiff(sample_name, df_bactscout_mod$name)
+
+# --- remove text after last underscore ---
+no_bactscout_result <- sub("_[^_]*$", "", no_bactscout_result)
+
 
 # --- Modify dataframe ---
 bactscout_df_value <- df_bactscout_mod %>%
@@ -448,21 +473,25 @@ bactscout_df_value <- df_bactscout_mod %>%
   mutate(read_length = paste0(read1_mean_length, " - ", read2_mean_length)) %>%
   select(-read1_mean_length, -read2_mean_length) %>%
   relocate(read_length, .before = "read_q30_rate") %>%
-  mutate(across(c(2, 3), ~ str_remove(., ";.*"))) %>%
-  mutate(gc_content = sprintf("%.1f", gc_content))
+  mutate(across(c(2, 3), ~ str_remove(., ";.*"))) %>%  # Remove value after semicolon
+  mutate(gc_content = sprintf("%.1f", gc_content)) # Change to one decimal place  only
 
-# Change MLST ST column NULL value to Blank
+
+# Change MLST ST column NUll value to Blank
 bactscout_df_value$mlst_st <- lapply(bactscout_df_value$mlst_st, function(x) {
   if (is.null(x)) "" else x
 })
 
-# --- Get Isolate number by merging ---
-bactscout_df_merge <- merge(bactscout_df_value, arsrl_id_df, by = "sample_id")
 
+
+# --- Get Isolate number by merging ---
+bactscout_df_merge <- merge(bactscout_df_value, arsrl_id_df, by ="sample_id")
+
+# --- Modify dataframe ---
 bactscout_df_merge <- bactscout_df_merge %>%
-  mutate(sample_id = strip_batch(sample_id)) %>%
+  mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id)) %>%
   select(-arsrl_org) %>% 
-  relocate(iso_num, .before = "sample_id")
+  relocate(iso_num, .before = "sample_id") 
 
 bactscout_df_merge$sample_id <- gsub("_", "\\_", bactscout_df_merge$sample_id, fixed = TRUE)
 
@@ -470,44 +499,143 @@ bactscout_df_merge$sample_id <- gsub("_", "\\_", bactscout_df_merge$sample_id, f
 colnames(bactscout_df_merge) <- c("Isolate No.","Sample ID", "Species", "Species Abundance", "Coverage (Qualibact)", "Duplication Rate",
                                  "GC Content","MLST (ST)", "Read Length", "Read Q30", "Final Status")
 
-# --- Highlight FAILED metric cells ---
-bactscout_df_merge <- highlight_failed(
-  bactscout_df_merge, bactscout_df_result,
-  c("Coverage (Qualibact)" = "Coverage (Qualibact)",
-    "Duplication Rate"     = "Duplication Rate",
-    "GC Content"            = "GC Content",
-    "MLST (ST)"             = "MLST (ST)",
-    "Read Length"           = "Read Length",
-    "Read Q30"              = "Read Q30")
-)
 
-# --- Color Final Status ---
+for (i in 1:nrow(bactscout_df_result)) {
+  
+  # --- 1. Handle FAILED Indices (Red Background, White Text) ---
+  if (!is.na(bactscout_df_result$failed_idx[i]) && nzchar(bactscout_df_result$failed_idx[i])) {
+    indices_fail <- tryCatch({
+      as.numeric(trimws(unlist(strsplit(bactscout_df_result$failed_idx[i], ","))))
+    }, error = function(e) numeric(0))
+    indices_fail <- indices_fail[!is.na(indices_fail) & indices_fail > 0]
+
+    for (col in indices_fail) {
+      if (col <= ncol(bactscout_df_merge)) {
+        val <- bactscout_df_merge[i, col]
+        # Red background, white bold text
+        bactscout_df_merge[i, col] <- paste0("\\colorbox{myred}{\\textcolor{white}{\\textbf{", as.character(val), "}}}")
+      }
+    }
+  }
+
+  # --- 2. Handle WARNING Indices (Yellow Background, Black Text) ---
+  # Note: Yellow background usually looks better with black text for readability
+  #if (!is.na(bactscout_df_result$warning_idx[i]) && nzchar(bactscout_df_result$warning_idx[i])) {
+  #  indices_warn <- tryCatch({
+  #    as.numeric(trimws(unlist(strsplit(bactscout_df_result$warning_idx[i], ","))))
+  #  }, error = function(e) numeric(0))
+  #  indices_warn <- indices_warn[!is.na(indices_warn) & indices_warn > 0]
+
+  #  for (col in indices_warn) {
+  #    if (col <= ncol(bactscout_df_merge)) {
+  #      val <- bactscout_df_merge[i, col]
+  #      # Yellow background, black bold text
+  #      bactscout_df_merge[i, col] <- paste0("\\colorbox{yellow}{\\textcolor{black}{\\textbf{", as.character(val), "}}}")
+  #    }
+  #  }
+  #}
+}
+
+
+
+# Get row indices
+rows_passed <- which(bactscout_df_result$a_final_status == 'PASSED')
+rows_warning <- which(bactscout_df_result$a_final_status == 'WARNING')
+rows_failed <- which(bactscout_df_result$a_final_status == 'FAILED')
+
+
+          
 bactscout_df_merge <- bactscout_df_merge %>%
-  mutate(`Final Status` = color_status(`Final Status`))
+  mutate(
+    `Final Status` = case_when(
+      row_number() %in% rows_passed  ~ cell_spec(`Final Status`, background = "#006b54", color = "white"),
+      row_number() %in% rows_warning ~ cell_spec(`Final Status`, background = "#ffd858"),
+      row_number() %in% rows_failed  ~ cell_spec(`Final Status`, background = "#D2042D", color = "white"),
+      TRUE ~ `Final Status`
+      )
+    )
+
 
 # --- Generate formatted table ---
-render_qc_table(bactscout_df_merge, pass_fail_legend, italic_col = 3)
 
+if (nrow(bactscout_df_merge) >= 30){
+  bactscout_df_merge %>%  
+  kable(
+      format = "latex", 
+      booktabs = TRUE, 
+      escape = FALSE, 
+      align = "c", 
+      row.names = FALSE,
+      longtable = TRUE  # 1. Enable longtable support
+    ) %>%
+    kable_styling(
+      latex_options = c("repeat_header"),
+      font_size = 7) %>%
+    row_spec(0, background = "#D4D4D4", bold = TRUE) %>%
+    column_spec(3, italic = TRUE) %>%
+    footnote(
+      general = c(
+        "\\\\colorbox{mygreen}{\\\\textcolor{white}{PASSED}}", "  |  ", 
+        "\\\\colorbox{myyellow}{WARNING}", "  |  ",  
+        "\\\\colorbox{myred}{\\\\textcolor{white}{FAILED}}"
+      ), 
+      general_title = "Legend:",
+      footnote_as_chunk = TRUE, 
+      escape = FALSE
+    )
+  
+} else {
+  # Create the table
+  bactscout_df_merge %>%  
+    kable(format = "latex", booktabs = TRUE, escape = FALSE, align = "c", row.names = FALSE) %>%
+    kable_styling(latex_options = c("scale_down", "hold_position")) %>%
+    row_spec(0, background = "#D4D4D4",bold = TRUE) %>%
+    column_spec(3,italic = TRUE) %>%
+    footnote(general = c("\\\\colorbox{mygreen}{\\\\textcolor{white}{PASSED}}","  |  ", 
+                         "\\\\colorbox{myyellow}{WARNING}","  |  ",  
+                        "\\\\colorbox{myred}{\\\\textcolor{white}{FAILED}}"), 
+            general_title = "Legend:",
+            footnote_as_chunk = T, escape = F)
+
+  
+}
+
+
+
+  
 ```
 
 
 
-```{r no-bactscout-result ,echo=FALSE, message=FALSE, warning=FALSE}
-if (length(no_bactscout_result) != 0) {
-  df_no_bactscout <- data.frame(
-    sample_id = paste(no_bactscout_result, collapse = ", "),
-    Remarks = "No Raw Reads Data"
-  )
-  colnames(df_no_bactscout) <- c('Sample ID', 'Remarks')
 
-  df_no_bactscout %>%
+
+```{r no-bactscout-result ,echo=FALSE, message=FALSE, warning=FALSE}
+if(length(no_bactscout_result) != 0){
+  # Convert the vector to a single comma-separated string
+  # The collapse argument specifies the string to be inserted between each element
+  no_bactscout_id <- paste(no_bactscout_result, collapse = ", ")
+  
+  # Create new dataframe
+  df_no_bactscout <- data.frame(sample_id = no_bactscout_id, Remarks = "No Raw Reads Data")
+  
+  colnames(df_no_bactscout) <- c('Sample ID','Remarks')
+  
+  no_bactscout_table <- df_no_bactscout %>% 
     kable(format = "latex", booktabs = TRUE, escape = TRUE, align = c("l", "c")) %>%
-    kable_styling(position = "left", latex_options = "hold_position") %>%
+    kable_styling(
+      position = "left",
+      latex_options = c("hold_position")
+    ) %>%
     column_spec(1, width = "20cm") %>%
     column_spec(2, width = "5cm") %>%
     row_spec(0, background = "#D4D4D4", bold = TRUE) %>%
     add_header_above(c("Summary of No Raw Reads Data" = 2), align = "l", bold = TRUE)
+  
+    no_bactscout_table  
+  
+  
 }
+
 
 ```
 
@@ -519,39 +647,50 @@ $\\$
 reco_result <- bind_rows(
   # Non-concordant WGS
   wgs_df %>%
-    filter(concordant == FALSE) %>%
+    filter(concordant == "FALSE") %>%
     transmute(sample_id, failed_conditions = "Non-concordant result"),
 
   # Failed raw reads (from BactScout)
   bactscout_df_result %>%
     filter(failed_cols != "") %>%
-    transmute(sample_id = name, failed_conditions = failed_cols),
+    transmute(sample_id = name,
+              failed_conditions = failed_cols),
 
   # Low read counts (only if exists)
   if (nrow(wgs_lowreads) > 0)
     wgs_lowreads %>%
-      transmute(sample_id, failed_conditions = "Low read counts")
+      transmute(sample_id,
+                failed_conditions = "Low read counts")
 ) %>%
-  mutate(sample_id = strip_batch(sample_id)) %>%
+  mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id)) %>%   # 👈 normalize IDs
   group_by(sample_id) %>%
-  summarise(failed_conditions = paste(unique(failed_conditions), collapse = ", "), .groups = "drop")
+  summarise(
+    failed_conditions = paste(unique(failed_conditions), collapse = ", "),
+    .groups = "drop"
+  )
+
 
 
 if (nrow(reco_result) == 0) {
-  reco_df <- data.frame(sample_id = "", failed_conditions = "No further action required for this batch.")
-} else {
+  reco_df <- data.frame(sample_id = "", 
+                        failed_conditions <- "No further action required for this batch.",
+                        stringsAsFactors = FALSE)
+  
+} else{
   reco_df <- reco_result %>%
     group_by(failed_conditions) %>%
-    summarise(sample_id = paste(sample_id, collapse = ", "), .groups = "drop") %>%
+    summarise(sample_id = paste(sample_id, collapse = ", ")) %>%
     relocate(failed_conditions, .after = sample_id)
 }
-colnames(reco_df) <- c('Sample ID','Reason - Failed Metrics')
 
-reco_df %>% 
+
+
+colnames(reco_df) <- c('Sample ID','Reason - Failed Metrics')
+reco_table <- reco_df %>% 
   kable(
     format = "latex",
     booktabs = TRUE,
-    escape = TRUE,
+    escape = TRUE,  # Keep FALSE since you pre-escaped underscores
     align = c("l")
   ) %>%
   kable_styling(
@@ -563,9 +702,16 @@ reco_df %>%
   row_spec(0, background = "#D4D4D4", bold = TRUE) %>%
   add_header_above(c("Summary of Raw Reads with FAILED QC results" = 2), align = "l", bold = TRUE)
 
+  reco_table  
+
+
 ```
 
+
 \end{landscape}
+
+
+
 
 \begin{landscape}
 \fontsize{7}{8}
@@ -575,6 +721,9 @@ reco_df %>%
 \section*{ASSEMBLY QC}
 
 \small\textbf{\emph{Table 3.} Summary of assembly reads quality control analysis.}
+
+
+
 ```{r assembly-qc, echo = FALSE, warning = FALSE, message = FALSE}
 assembly_qc <- merge(wgs_df, arsrl_id_df, by = "sample_id")
 
@@ -582,26 +731,37 @@ assembly_qc <- merge(wgs_df, arsrl_id_df, by = "sample_id")
 assembly_qc <- assembly_qc %>%
   mutate(
     wgs_id_clean = case_when(
-      wgs_id %in% c("Escherichia/Shigella", "Escherichia coli/Shigella") ~ "Escherichia coli",
+      wgs_id == "Escherichia/Shigella" ~ "Escherichia coli",
+      wgs_id == "Escherichia coli/Shigella" ~ "Escherichia coli",
       TRUE ~ wgs_id
     )
   )
 
+
+
 # Check if wgs_id is genus only
-assembly_qc$with_species <- str_detect(assembly_qc$wgs_id, " ")
+assembly_qc$with_species<- str_detect(assembly_qc$wgs_id, " ") 
+
 
 # Filter df with genus only
 genus_df <- assembly_qc %>%
   filter(with_species == FALSE)
 
-# --- Read qualibact reference metrics ---
-qualibact_data <- read_csv(here("data_files/","qualibact_filtered_metrics_07292026.csv"))
+
+# --- Read samplesheet ---
+#qualibact_data <- read_csv("data_files/qualibact_filtered_metrics.csv") %>%
+#  mutate(species = gsub("_", " ", species))
+
+qualibact_data <- read_csv("data_files/qualibact_filtered_metrics.csv")
+
+
 
 if (nrow(genus_df) != 0) {
   # Create the regex pattern
   wgs_pattern <- paste(genus_df$wgs_id, collapse = "|")
   
   qualibact_partial <- qualibact_data %>%
+    # Use the column name directly
     filter(grepl(wgs_pattern, species)) %>% 
     mutate(metric_clean = str_to_lower(metric))
   
@@ -621,16 +781,20 @@ if (nrow(genus_df) != 0) {
     select(-metric) %>%
     relocate(metric_clean, .after = "species")
   
+  
   qualibact_ref <- rbind(qualibact_ref, result_qualibact)
   
   # -- Replace -Inf in dataframe with NA --
   qualibact_ref[sapply(qualibact_ref, is.infinite)] <- NA
   
 } else {
+  # --- Prepare reference table: only species present in assembly_qc ---
   qualibact_ref <- qualibact_data %>%
     filter(species %in% assembly_qc$wgs_id_clean) %>%
     mutate(metric_clean = str_to_lower(metric))
+
 }
+
 
 
 # --- Map qualibact metrics to assembly_qc column names ---
@@ -672,6 +836,7 @@ for (m in names(metric_map)) {
 }
 
 
+
 # --- List all FAILED QC ---
 assembly_qc_checked <- assembly_qc_checked %>%
   rowwise() %>%
@@ -685,7 +850,10 @@ assembly_qc_checked <- assembly_qc_checked %>%
       "N50" = n50_contig_length_qc == "PASSED",
       "Total Contigs" = total_contig_qc == "PASSED"
     )),
+    # Set result to FALSE if any condition is FALSE or NA
     result = all(unlist(condition_checks), na.rm = FALSE),
+    
+    # Only list failed conditions (FALSE), remove NA
     failed_conditions = {
       cond_values <- unlist(condition_checks)
       failed <- names(cond_values[!is.na(cond_values) & cond_values == FALSE])
@@ -695,160 +863,343 @@ assembly_qc_checked <- assembly_qc_checked %>%
   ungroup()
 
 
+
+# Get raw reads result from bactscout_df_result
+#assembly_qc_checked$raw_reads_result <- bactscout_df_result$a_final_status[bactscout_df_result$name == assembly_qc_checked$sample_id]
+
 # Find the position of each sample_id in the bactscout_df_result names
 matches <- match(assembly_qc_checked$sample_id, bactscout_df_result$name)
+
+# Use those positions to pull the correct status
 assembly_qc_checked$raw_reads_result <- bactscout_df_result$a_final_status[matches]
 
+# condition assembly qc result
 assembly_qc_checked <- assembly_qc_checked %>%
   mutate(assembly_result = ifelse(result == TRUE, "PASSED", "FAILED"))
 
-write_xlsx(assembly_qc_checked, "data_files/assembly_qc_checked.xlsx")
+file_name <- paste0("data_files/assembly_qc_checked.xlsx")
+write_xlsx(assembly_qc_checked, file_name)
 
 ```
 
+
 ```{r aasembly-qc-graph, echo = FALSE, warning = FALSE, message = FALSE}
-# --- Per-metric FAILED status ---
+# --- Create new column to check final status with warning status and list column indices with failed results ---
 assembly_qc_result <- assembly_qc_checked %>%
   select(iso_num, sample_id, wgs_id, completeness_qc, contamination_qc, total_coding_sequences_qc, 
         genome_size_qc, gc_content_qc, n50_contig_length_qc, total_contig_qc)
 
+assembly_qc_result$failed_idx <- apply(assembly_qc_result, 1, function(row) {
+  failed_cols <- which(row[-c(1:3)] == "FAILED") # exclude name and species
+  # Adjust index to match original dataframe
+  failed_cols <- failed_cols + 3
+  paste(failed_cols, collapse = ", ")
+})
+
+
+#assembly_qc_result$warning_idx <- apply(assembly_qc_result, 1, function(row) {
+#  warning_cols <- which(row[-c(1:3)] == "WARNING") # exclude name and species
+#  # Adjust index to match original dataframe
+#  warning_cols <- warning_cols + 3
+#  paste(warning_cols, collapse = ", ")
+#})
+
 # --- List sample without assembly result ---
-no_assembly_result <- setdiff(sample_name, assembly_qc_result$sample_id) %>% strip_batch()
+no_assembly_result <- setdiff(sample_name, assembly_qc_result$sample_id)
+
+# --- remove text after last underscore ---
+no_assembly_result <- sub("_[^_]*$", "", no_assembly_result)
+
 
 # --- Modify dataframe ---
 assembly_qc_value <- assembly_qc_checked %>%
   select(iso_num, sample_id, wgs_id, completeness, contamination, total_coding_sequences, 
         genome_size, gc_content, n50_contig_length, total_contig, raw_reads_result, assembly_result) %>%
-  mutate(sample_id = strip_batch(sample_id))
+  mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id))
+
 
 assembly_qc_summary <- assembly_qc_value
 
-# Convert Basepairs to Megabasepairs
-bp_to_mb <- function(bp) paste0(format(round(bp / 1e6, 2), nsmall = 2), " Mb")
+
+# Create a conversion function to convert Basepairs to MEgabasepairs
+bp_to_mb <- function(bp) {
+  x <- bp / 1e6
+  x <- format(round(x, 2), nsmall = 2)
+  x <- paste0(x, " Mb")
+  return(x)
+}
+
+assembly_qc_value$genome_size <- bp_to_mb(assembly_qc_value$genome_size)
+
+
+assembly_qc_value$sample_id <- gsub("_", "\\_", assembly_qc_value$sample_id, fixed = TRUE)
+
+
+
 
 # Rename and reorder columns
 colnames(assembly_qc_value) <- c("Isolate No.","Sample ID", "WGS ID", "Completeness", "Contamination", "Total Coding Sequences",
                                  "Genome Size", "GC Content", "N50", "Total Contig", "Raw Reads Result", "Assembly Result")
 
-assembly_qc_value <- assembly_qc_value %>%
-  mutate(
-    `Genome Size` = bp_to_mb(`Genome Size`),
-    `Sample ID` = gsub("_", "\\_", `Sample ID`, fixed = TRUE)
-  ) %>%
-  mutate(across(everything(), as.character))
 
-# --- Highlight FAILED metric cells ---
-assembly_qc_value <- highlight_failed(
-  assembly_qc_value, assembly_qc_result,
-  c(completeness_qc = "Completeness",
-    contamination_qc = "Contamination",
-    total_coding_sequences_qc = "Total Coding Sequences",
-    genome_size_qc = "Genome Size",
-    gc_content_qc = "GC Content",
-    n50_contig_length_qc = "N50",
-    total_contig_qc = "Total Contig")
-)
+# 1. Convert entire table to character once before starting loops
+# This prevents column type conflicts when inserting LaTeX strings
+assembly_qc_value[] <- lapply(assembly_qc_value, as.character)
 
-# Assembly Result is FAILED whenever Raw Reads already FAILED
+for (i in 1:nrow(assembly_qc_result)) {
+  
+  # --- Process FAILED Indices (Red) ---
+  if (!is.na(assembly_qc_result$failed_idx[i]) && nzchar(assembly_qc_result$failed_idx[i])) {
+    indices_fail <- tryCatch({
+      as.numeric(trimws(unlist(strsplit(assembly_qc_result$failed_idx[i], ","))))
+    }, error = function(e) numeric(0))
+    
+    indices_fail <- indices_fail[!is.na(indices_fail) & indices_fail > 0]
+    
+    for (col in indices_fail) {
+      if (col <= ncol(assembly_qc_value)) {
+        val <- assembly_qc_value[i, col]
+        assembly_qc_value[i, col] <- paste0("\\colorbox{myred}{\\textcolor{white}{\\textbf{", val, "}}}")
+      }
+    }
+  }
+  
+  # --- Process WARNING Indices (Yellow) ---
+  #if (!is.na(assembly_qc_result$warning_idx[i]) && nzchar(assembly_qc_result$warning_idx[i])) {
+  #  indices_warn <- tryCatch({
+  #    as.numeric(trimws(unlist(strsplit(assembly_qc_result$warning_idx[i], ","))))
+  #  }, error = function(e) numeric(0))
+  #  
+  #  indices_warn <- indices_warn[!is.na(indices_warn) & indices_warn > 0]
+  #  
+  #  for (col in indices_warn) {
+  #    if (col <= ncol(assembly_qc_value)) {
+  #      val <- assembly_qc_value[i, col]
+  #      # Using yellow background with black text for better contrast
+  #      assembly_qc_value[i, col] <- paste0("\\colorbox{yellow}{\\textcolor{black}{\\textbf{", val, "}}}")
+  #    }
+  #  }
+  #}
+}
+
+
+# Change Assembly Result based on Raw Reads Result
 assembly_qc_value <- assembly_qc_value %>%
   mutate(`Assembly Result` = ifelse(`Raw Reads Result` == 'FAILED', "FAILED", `Assembly Result`))
 
-# --- Color status columns ---
+
+# Get row indices
+rows_passed_raw <- which(assembly_qc_value$`Raw Reads Result`== 'PASSED')
+rows_warning_raw <- which(assembly_qc_value$`Raw Reads Result` == 'WARNING')
+rows_failed_raw <- which(assembly_qc_value$`Raw Reads Result` == 'FAILED')
+
+rows_passed_asm <- which(assembly_qc_value$`Assembly Result`== 'PASSED')
+rows_warning_asm <- which(assembly_qc_value$`Assembly Result` == 'WARNING')
+rows_failed_asm <- which(assembly_qc_value$`Assembly Result` == 'FAILED')
+
+
+          
 assembly_qc_value <- assembly_qc_value %>%
   mutate(
-    `Raw Reads Result` = color_status(`Raw Reads Result`),
-    `Assembly Result`  = color_status(`Assembly Result`)
-  )
+    `Raw Reads Result` = case_when(
+      row_number() %in% rows_passed_raw   ~ cell_spec(`Raw Reads Result`, background = "#006b54", color = "white"),
+      row_number() %in% rows_warning_raw  ~ cell_spec(`Raw Reads Result`, background = "#ffd858"),
+      row_number() %in% rows_failed_raw   ~ cell_spec(`Raw Reads Result`, background = "#D2042D", color = "white"),
+      TRUE ~ `Raw Reads Result`
+      )
+    ) %>%
+  mutate(
+    `Assembly Result` = case_when(
+      row_number() %in% rows_passed_asm   ~ cell_spec(`Assembly Result`, background = "#006b54", color = "white"),
+      row_number() %in% rows_warning_asm  ~ cell_spec(`Assembly Result`, background = "#ffd858"),
+      row_number() %in% rows_failed_asm   ~ cell_spec(`Assembly Result`, background = "#D2042D", color = "white"),
+      TRUE ~ `Assembly Result`
+      )
+    )
+
+
+
 
 # --- Generate formatted table ---
-render_qc_table(assembly_qc_value, pass_fail_legend, italic_col = 3)
 
+if (nrow(assembly_qc_value) >= 30) {
+  
+  assembly_qc_value %>%  
+    kable(
+      format = "latex", 
+      booktabs = TRUE, 
+      escape = FALSE, 
+      align = "c", 
+      row.names = FALSE,
+      longtable = TRUE  # This enables multi-page support
+    ) %>%
+    kable_styling(latex_options = c(
+      "repeat_header",  # Repeats the header on subsequent pages
+      "scale_down"      # Note: scale_down often conflicts with longtable
+    ), font_size = 7) %>%
+    row_spec(0, background = "#D4D4D4", bold = TRUE) %>%
+    column_spec(3, italic = TRUE) %>%
+    footnote(
+      general = c(
+        "\\\\colorbox{mygreen}{\\\\textcolor{white}{PASSED}}", "  |  ", 
+        "\\\\colorbox{myyellow}{WARNING}", "  |  ",  
+        "\\\\colorbox{myred}{\\\\textcolor{white}{FAILED}}"
+      ), 
+      general_title = "Legend:",
+      footnote_as_chunk = TRUE, 
+      escape = FALSE
+    )
+  
+} else {
+  # Create the table
+  assembly_qc_value %>%  
+    kable(format = "latex", booktabs = TRUE, escape = FALSE, align = "c", row.names = FALSE) %>%
+    kable_styling(latex_options = c("scale_down", "hold_position")) %>%
+    row_spec(0, background = "#D4D4D4",bold = TRUE) %>%
+    column_spec(3,italic = TRUE) %>%
+    footnote(general = c("\\\\colorbox{mygreen}{\\\\textcolor{white}{PASSED}}","  |  ", 
+                         "\\\\colorbox{myyellow}{WARNING}","  |  ",  
+                        "\\\\colorbox{myred}{\\\\textcolor{white}{FAILED}}"), 
+            general_title = "Legend:",
+            footnote_as_chunk = T, escape = F)
+
+}
+
+
+  
 ```
 
 \section*{Final Recommendation based on QC results}
 
 
 ```{r overall-recommendation-table ,echo=FALSE, message=FALSE, warning=FALSE}
-# Every row here already satisfies raw_reads_result == "FAILED" |
-# assembly_result == "FAILED", so final_result is always "FAILED"
-overall_reco <- assembly_qc_checked %>%
+overall_reco <- assembly_qc_checked %>% 
   filter(raw_reads_result == "FAILED" | assembly_result == "FAILED") %>%
-  transmute(sample_id = strip_batch(sample_id), final_result = "FAILED")
+  select(sample_id, raw_reads_result, assembly_result) %>%
+  mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id),
+         final_result = case_when(
+           raw_reads_result == "PASSED" & assembly_result == "PASSED" ~ "PASSED",
+           raw_reads_result == "FAILED" | assembly_result == "FAILED" ~ "FAILED",
+           .default = ""
+           )) %>%
+  select(sample_id, final_result)
 
-if (nrow(wgs_lowreads) > 0) {
-  overall_reco <- bind_rows(
-    overall_reco,
-    wgs_lowreads %>% transmute(sample_id = strip_batch(sample_id), final_result = "low read count")
-  )
+
+if (nrow(wgs_lowreads) != 0){
+  wgs_lowreads_result <- wgs_lowreads %>%
+    select(sample_id) %>%
+    mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id),
+           final_result = "low read count")
+  
+  overall_reco <- rbind(overall_reco, wgs_lowreads_result)
 }
 
-nonconcordant <- wgs_df %>% filter(concordant == FALSE)
-if (nrow(nonconcordant) > 0) {
-  overall_reco <- bind_rows(
-    overall_reco,
-    nonconcordant %>% transmute(sample_id = strip_batch(sample_id), final_result = "non-concordant resul")
-  )
+nonconcordant <- wgs_df %>%
+    filter(concordant == "FALSE")
+
+if (nrow(nonconcordant) != 0){
+  nonconcordant_result <- nonconcordant %>%
+    select(sample_id) %>%
+    mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id),
+           final_result = "non-concordant resul")
+  
+  overall_reco <- rbind(overall_reco, nonconcordant_result)
 }
 
-if (nrow(overall_reco) > 0) {
-  final_reco_df <- data.frame(
-    sample_id = paste(unique(overall_reco$sample_id), collapse = ", "),
-    remarks = "For Repeat Testing"
-  )
+
+
+if (nrow(overall_reco) !=0) {
+  # Concatenate all rows in the 'sample_id' column
+  overall_reco_idlist <- paste(unique(overall_reco$sample_id), collapse = ", ")
+  
+  final_reco_df <- data.frame(sample_id = overall_reco_idlist, failed_remarks <- "For Repeat Testing")
+
 } else {
-  final_reco_df <- data.frame(sample_id = "", remarks = "No further action required for this batch.")
+
+  final_reco_df <- data.frame(sample_id = "", failed_remarks <- "No further action required for this batch.")
+ 
 }
+
 colnames(final_reco_df) <- c("Sample ID", "Remarks")
 
-final_reco_df %>% 
+  
+
+final_reco_table <- final_reco_df %>% 
   kable(
     format = "latex",
     booktabs = TRUE,
-    escape = TRUE,
+    escape = TRUE,  # Keep FALSE since you pre-escaped underscores
     align = c("l")
   ) %>%
-  kable_styling(position = "left") %>%
+  kable_styling(
+    position = "left"
+  ) %>%
   column_spec(1, width = "12cm") %>%
   column_spec(2, width = "12cm") %>%
-  row_spec(0, background = "#D4D4D4", bold = TRUE)
+  row_spec(0, background = "#D4D4D4",bold = TRUE)
+
+
+  final_reco_table  
+
+
 
 ```
 
 
 
-```{r overall-result-summary, echo=FALSE, message=FALSE, warning=FALSE}
+
+
+
+
+```{r overall-result-summary, echo = FALSE, warning = FALSE, message = FALSE}
 raw_reads_summary <- bactscout_df_value %>%
-  select(-a_final_status, -species)
+  select(-a_final_status, -species) 
 
 # Get raw reads failed result from bactscout_df_result
 raw_reads_summary$failed_conditions <- bactscout_df_result$failed_cols[bactscout_df_result$name == raw_reads_summary$sample_id]
 
+# create new wgs_summary_table with additional column for result
 raw_reads_summary <- raw_reads_summary %>%
   mutate(
     batch_code = batch_code,
-    sample_id = strip_batch(sample_id)
-  ) %>%
+    sample_id = sub("(.*)_[^_]*$", "\\1", sample_id)
+    ) %>%
   relocate(batch_code, .before = sample_id) %>%
   rename(raw_failed_conditions = failed_conditions)
 
-overall_result <- merge(raw_reads_summary, assembly_qc_summary, by = "sample_id")
 
-# --- Get assembly result failed condition ---
+overall_result <- merge(raw_reads_summary, assembly_qc_summary, by ="sample_id")
+
+
+# --- Get assembly result failed condition --
 failed_assembly <- assembly_qc_checked %>%
-  transmute(sample_id = strip_batch(sample_id), assembly_failed_conditions = failed_conditions)
+  select(sample_id, failed_conditions) %>%
+  mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id)) %>%
+  rename(assembly_failed_conditions = failed_conditions)
 
-overall_result <- merge(overall_result, failed_assembly, by = "sample_id") %>%
+
+# -- Merge --
+overall_result <- merge(overall_result, failed_assembly, by ="sample_id")
+
+
+overall_result <- overall_result %>%
   mutate(final_result = case_when(
-    raw_reads_result %in% c("PASSED", "WARNING") & assembly_result == "PASSED" ~ "PASSED",
+    raw_reads_result == "PASSED" & assembly_result == "PASSED" ~ "PASSED",
+    raw_reads_result == "WARNING" & assembly_result == "PASSED" ~ "PASSED",
     raw_reads_result == "FAILED" | assembly_result == "FAILED" ~ "FAILED",
     .default = ""
   )) %>%
   relocate(wgs_id, .before = species_abundance) %>%
   relocate(final_result, .after = wgs_id) %>%
   select(-iso_num)
+  
+#sheet_write(data = overall_result, ss = sheet_id, sheet = "result")
 
 # append googlesheet "result" tab
-#sheet_append(ss = wgs_sheet_id, sheet = "result_new", data = overall_result)
+sheet_append(ss = sheet_id, sheet = "result_new", data = overall_result)
+
+
+#write.table(as.matrix(overall_result), paste0("data_files/ARSRL_WGS_QC_report_",batch_code,".csv"), sep = ",", row.names = FALSE)
 
 ```
 
@@ -858,16 +1209,34 @@ mlst_df <- overall_result %>%
   select(sample_id, wgs_id, mlst_st) %>%
   mutate(mlst_st = ifelse(mlst_st == "", "-", mlst_st))
 
-# Summarize and count MLST results
-mlst_summary_df <- mlst_df %>%
-  group_by(wgs_id, mlst_st) %>%
-  summarise(count = sum(!is.na(mlst_st)), .groups = "drop") %>%
-  mutate(mlst_count = paste0(mlst_st, " (n= ", count, " )")) %>%
-  group_by(wgs_id) %>%
-  summarise(mlst_count = paste(mlst_count, collapse = ", "), .groups = "drop")
+#Summarize and count MLST results
+mlst_count_df <- mlst_df %>% group_by(wgs_id,mlst_st) %>% summarise(count = sum(!is.na(mlst_st)))
+mlst_count_df$mlst_count <- paste0(mlst_count_df$mlst_st, " (n= ", mlst_count_df$count, " )")
 
-# list unique wgs_id in the dataframe, for the caption
-mlst_organism_list <- letter_and_list(unique(mlst_df$wgs_id))
+
+mlst_count_summary  <- subset(mlst_count_df , select = c(wgs_id, mlst_count))
+mlst_summary_df <- mlst_count_summary %>% 
+  group_by(wgs_id) %>% 
+  mutate(mlst_count = paste0(mlst_count, collapse = ", ")) %>%
+  distinct()
+
+
+#list unique wgs_id in the dataframe
+mlst_organism_list <- unique(mlst_df$wgs_id)
+
+# -- add letter --
+mlst_organism_list <- paste0(
+  letters[seq_along(mlst_organism_list)],
+  ") ",
+  mlst_organism_list
+)
+
+# -- Add "and" before the last item --
+n <- length(mlst_organism_list)
+
+if (n > 1){
+  mlst_organism_list[n] <- paste("and", mlst_organism_list[n])
+}
 
 ```
 
@@ -885,47 +1254,58 @@ mlst_organism_list <- letter_and_list(unique(mlst_df$wgs_id))
 ```{r mlst_table ,echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
 colnames(mlst_summary_df) <- c('WGS ID','MLST (ST)')
 
-mlst_summary_df %>%
-  kable(format = 'latex', booktabs = TRUE, align = "l", row.names = FALSE) %>%
+#Print table
+mlst_summary_table <- kable(mlst_summary_df, format='latex', booktabs = TRUE, align = "l", row.names = FALSE) %>%
   kable_styling(position = "left") %>%
   column_spec(1, width = "8cm", italic = TRUE) %>%
   column_spec(2, width = "16cm") %>%
-  row_spec(0, background = "#D4D4D4", bold = TRUE) %>%
-  footnote(general = "(-) Not identified",
+  row_spec(0, background = "#D4D4D4",bold = TRUE) %>%
+  footnote(general ="(-) Not identified",
           general_title = "Legend: ", 
-          footnote_as_chunk = TRUE, title_format = c("italic"))
+          footnote_as_chunk = T, title_format = c("italic"))
+      
+  print(mlst_summary_table)
 
 ```
 
 
 ```{r no_mlst_table ,echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
-# list sample_id not present in the mlst table
+#list existing sample_id in the mlst table
 no_mlst <- sample_name_clean[!(sample_name_clean %in% mlst_df$sample_id)]
 
+# Only proceed if there are actually samples missing from MLST
 if (length(no_mlst) > 0) {
+  
+  # Create the concatenated ID to match against your wgs_df
   search_ids <- paste(no_mlst, batch_name_clean, sep = "_")
+  
+  # Filter wgs_df to get matching wgs_ids
+  # Using %in% ensures we only get rows that exist
   filtered_wgs <- wgs_df[wgs_df$sample_id %in% search_ids, ]
-
+  
   if (nrow(filtered_wgs) > 0) {
+    # Build the data frame using the filtered results
     df <- data.frame(
-      sample_id = strip_batch(filtered_wgs$sample_id),
+      sample_id = sub("(.*)_[^_]*$", "\\1", filtered_wgs$sample_id),
       wgs_id    = filtered_wgs$wgs_id,
       species   = "No MLST result"
     )
-
-    df %>%
-      kable(align = "c", row.names = FALSE) %>%
+    
+    # Generate and print table
+    no_mlst_table <- kable(df, align = "c", row.names = FALSE) %>%
       kable_styling(position = "left") %>%
       row_spec(0, background = "#D4D4D4", bold = TRUE) %>%
       add_header_above(c("Summary of Sample with No MLST Result" = 3), align = "l", bold = TRUE)
-
+    
+    print(no_mlst_table)
   } else {
     message("Samples were found missing from MLST, but no matching WGS IDs were found.")
   }
-
+  
 } else {
   message("All samples have MLST results. No table needed.")
 }
+
 
 ```
 
@@ -933,42 +1313,94 @@ if (length(no_mlst) > 0) {
 
 
 ```{r amr_genes ,echo=FALSE, message=FALSE, warning=FALSE}
-wgs_species <- wgs_df %>% select(sample_id, wgs_id)
+wgs_species <- subset(wgs_df, select = c("sample_id", "wgs_id"))
 
 df_amrfinderplus1 <- df_amrfinderplus
+
+#checkm2 column names to lower
 names(df_amrfinderplus1) <- tolower(names(df_amrfinderplus1))
+
+
+#Change Name to sample_id
 names(df_amrfinderplus1)[names(df_amrfinderplus1) == 'name'] <- 'sample_id'
 names(df_amrfinderplus1)[names(df_amrfinderplus1) == 'element symbol'] <- 'element_symbol'
 
-df_amrfinderplus1 <- df_amrfinderplus1 %>%
-  mutate(sample_id = gsub("-", "_", sample_id, fixed = TRUE)) %>%
-  inner_join(wgs_species, by = "sample_id") %>%
-  mutate(wgs_id = gsub("quasi", "", wgs_id, fixed = TRUE)) %>%
-  filter(grepl(batch_name_clean, sample_id)) %>%
-  mutate(sample_id = strip_batch(sample_id))
+#change "-" to "_" in sample_id column
+df_amrfinderplus1$sample_id <- gsub("-", "_", df_amrfinderplus1$sample_id, fixed=TRUE)
+
+
+#merge wgs_id from wgs_df to mlst_df to set as species value
+df_amrfinderplus1 <- merge(df_amrfinderplus1,wgs_species,by = "sample_id")
+
+#remove "quasi" to wgs_id column
+df_amrfinderplus1$wgs_id <- gsub("quasi", "", df_amrfinderplus1$wgs_id, fixed=TRUE)
+
+
+
+# Filter rows where 'name' contains the word "sample"
+df_amrfinderplus1 <- df_amrfinderplus1[grepl(batch_name_clean, df_amrfinderplus1$sample_id), ]
+
+#remove batch name in sample_id
+df_amrfinderplus1$sample_id <- sub("(.*)_[^_]*$", "\\1", df_amrfinderplus1$sample_id)
 
 amr_genes_species <- unique(df_amrfinderplus1$wgs_id)
-amr_genes_list <- letter_and_list(amr_genes_species)
 
-# One summary table per species, keyed by species name (replaces the
-# original assign()/get()-by-string-name pattern with a plain named list).
-amr_gene_tables <- list()
+# -- add letter --
+amr_genes_list <- paste0(
+  letters[seq_along(amr_genes_species)],
+  ") ",
+  amr_genes_species
+)
 
-for (sp in amr_genes_species) {
-  sample_ids <- df_amrfinderplus1$sample_id[df_amrfinderplus1$wgs_id == sp]
 
-  amr_genes_df <- df_amrfinderplus1 %>%
-    mutate(
-      subclass = gsub("NA", "", subclass, fixed = TRUE),
-      Newcols = gsub("/", "/ ", paste(type, subclass), fixed = TRUE)
-    ) %>%
-    select(sample_id, Newcols, element_symbol) %>%
-    group_by(Newcols, sample_id) %>%
-    summarize(Concat = paste0(element_symbol, collapse = ", "), .groups = "drop") %>%
-    pivot_wider(names_from = Newcols, values_from = Concat)
+# -- Add "and" before the last item --
+n <- length(amr_genes_list)
 
-  amr_gene_tables[[sp]] <- amr_genes_df[amr_genes_df$sample_id %in% sample_ids, ]
+
+if (n > 1){
+  amr_genes_list[n] <- paste("and", amr_genes_list[n])
 }
+
+#vector to hold list of amr gene datables
+amr_gene_df_list = c()
+
+
+for(i in amr_genes_species) {
+  df <- subset(df_amrfinderplus1, df_amrfinderplus1$wgs_id == i)
+  sample_id <- c(df$sample_id)
+  
+  #create new dataframe to duplicate df_amrfinderplus1
+  amr_genes_df <- df_amrfinderplus1
+  
+  #change "NA" to " " in subclass column
+  amr_genes_df$subclass <- gsub("NA", "", amr_genes_df$subclass, fixed=TRUE)
+  
+  amr_genes_df$Newcols <- paste(amr_genes_df$type,amr_genes_df$subclass, sep = " ")
+  
+  #change "/" to "/ " in sample_id column
+  amr_genes_df$Newcols <- gsub("/", "/ ", amr_genes_df$Newcols, fixed=TRUE)
+  
+  #subset dataframe to retain needed columns only
+  amr_genes_df <- subset(amr_genes_df, select = c(sample_id,Newcols,element_symbol))
+  
+  
+  #convert multiple rows with same Newcols value to single row
+  amr_genes_df <- amr_genes_df %>%
+    group_by(Newcols, sample_id) %>%
+    summarize(Concat = paste0(element_symbol, collapse = ", "))
+  
+  #Create new dataframe to summarize the result
+  amr_genes_df <- amr_genes_df  %>%
+    pivot_wider(names_from = Newcols,
+                values_from = Concat)
+ #assign new name to dataframe
+  nam <- paste("amr", i, sep = "_")
+  assign(nam, amr_genes_df[amr_genes_df$sample_id %in% sample_id, ])
+  
+  amr_gene_df_list <- c(amr_gene_df_list, nam)
+
+}
+
 
 ```
 
@@ -985,88 +1417,126 @@ for (sp in amr_genes_species) {
 
 ```{r amr_genes_table ,echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
 
-wgs_species_1 <- wgs_species %>% mutate(sample_id = strip_batch(sample_id))
+for (idx in seq_along(amr_gene_df_list)) {
+  i <- amr_gene_df_list[idx]
+  df <- get(i)
+  
+  wgs_species_1 <- wgs_species
+  
+  #remove batch name in sample_id
+  wgs_species_1$sample_id <- sub("(.*)_[^_]*$", "\\1", wgs_species_1$sample_id)
 
-for (idx in seq_along(amr_gene_tables)) {
-  sp <- names(amr_gene_tables)[idx]
-  df <- amr_gene_tables[[idx]]
-
-  # Merge wgs_id from wgs_df to set as species value
-  df <- df %>%
-    inner_join(wgs_species_1, by = "sample_id") %>%
-    rename(species = wgs_id, `Sample ID` = sample_id) %>%
-    relocate(species, .after = `Sample ID`)
-
+  # Merge wgs_id from wgs_df to amr_gene to set as species value
+  df <- merge(df, wgs_species_1, by = "sample_id")
+  
+  # Change wgs_id to species
+  names(df)[names(df) == 'wgs_id'] <- 'species'
+  names(df)[names(df) == 'sample_id'] <- 'Sample ID'
+  
+  # Reorder column
+  df <- df %>% relocate(species, .after = `Sample ID`)
+  
   # Remove columns with all NA values
   df <- df[, colSums(is.na(df)) < nrow(df)]
-
-  # Species caption for this table, e.g. "a) Escherichia coli"
-  species_caption <- paste0("\\\\textit{", unique(df$species)[1], "}")
-  species_caption <- paste0(letters[idx], ") ", species_caption)
-
-  df <- df %>% select(-species)
-
+  
+  # Get unique species value
+  species <- unique(df$species)
+  species_caption <- paste("\\\\textit{", species, "}", sep = "")
+  species_caption <- species_caption[1]
+  
+  # -- add letter --
+  species_caption <- paste0(
+    letters[idx],
+    ") ",
+    species_caption
+  )
+  
+  # Subset dataframe to retain needed columns only
+  df <- subset(df, select = -c(species))
+  
   # Parameters for splitting
   max_rows_per_table <- 6
-  max_cols_per_table <- 6  # Maximum columns per table (excluding Sample ID)
-
+  max_cols_per_table <- 6  # Maximum columns per table (excluding sample_id)
+  
+  # Get the column names (excluding sample_id)
   all_cols <- setdiff(colnames(df), "Sample ID")
+  
+  # Calculate number of column groups needed
   num_col_groups <- ceiling(length(all_cols) / max_cols_per_table)
+  
+  # Split rows first
   num_row_groups <- ceiling(nrow(df) / max_rows_per_table)
-
-  for (row_group in 1:num_row_groups) {
-    start_row <- (row_group - 1) * max_rows_per_table + 1
+  
+  for(row_group in 1:num_row_groups) {
+    # Determine row range for this group
+    start_row <- (row_group-1) * max_rows_per_table + 1
     end_row <- min(row_group * max_rows_per_table, nrow(df))
     df_row_subset <- df[start_row:end_row, , drop = FALSE]
-
-    for (col_group in 1:num_col_groups) {
-      start_col <- (col_group - 1) * max_cols_per_table + 1
+    
+    # Now split columns for this row group
+    for(col_group in 1:num_col_groups) {
+      # Determine column indices for this group
+      start_col <- (col_group-1) * max_cols_per_table + 1
       end_col <- min(col_group * max_cols_per_table, length(all_cols))
       cols_to_keep <- c("Sample ID", all_cols[start_col:end_col])
-
+      
       df_subset <- df_row_subset[, cols_to_keep, drop = FALSE]
-
-      amr_gene_table <- knitr::kable(df_subset, format = 'latex', booktabs = TRUE, align = "c") %>%
+      
+      # Create table
+      amr_gene_table <- knitr::kable(df_subset, format='latex', booktabs = TRUE, align = "c") %>%
         kable_styling(
           position = "left",
           latex_options = c("HOLD_position", "scale_down"), 
           font_size = 7
         ) %>%
         row_spec(0, background = "#D4D4D4", bold = TRUE) %>%
+        #column_spec(2:ncol(df_subset), width = "3cm") %>%
         add_header_above(setNames(ncol(df_subset), 
                                 paste0(species_caption, 
                                       " (Part ", row_group, ".", col_group, ")")), 
                         bold = TRUE, escape = FALSE, align = "l")
-
+      
       print(amr_gene_table)
-
-      if (col_group < num_col_groups) cat("\n\n\\vspace{5mm}\n\n")
+      
+      # Add vertical space between column groups (but not after last one)
+      if(col_group < num_col_groups) cat("\n\n\\vspace{5mm}\n\n")
     }
-
-    if (row_group < num_row_groups) cat("\n\n\\vspace{10mm}\n\n")
+    
+    # Add more vertical space between row groups (but not after last one)
+    if(row_group < num_row_groups) cat("\n\n\\vspace{10mm}\n\n")
   }
 }
 ```
 
 
+
+
+
+
 ```{r no_amr_genes_table ,echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
-# list wgs_id not present in the AMR results
+#list existing sample_id in the mlst table
 no_amr <- wgs_df$wgs_id[!(df_amrfinderplus1$wgs_id %in% wgs_df$wgs_id)]
-no_amr <- no_amr[!grepl('quasi', no_amr)]
 
-if (length(no_amr) != 0) {
-  sample_id <- wgs_df$sample_id[!(wgs_df$sample_id %in% paste(df_amrfinderplus1$sample_id, batch_name_clean, sep = "_"))]
+#remove if with quasi value
+no_amr <-no_amr[!grepl('quasi', no_amr)]
 
-  df <- data.frame(sample_id, wgs_id = no_amr, remarks = "No AMR determinant detected")
-
-  df %>%
-    kable(align = "c", row.names = FALSE) %>%
+if (length(no_amr) !=0){
+  sample_id <- wgs_df$sample_id[!(wgs_df$sample_id %in% paste(df_amrfinderplus1$sample_name, batch_name_clean, sep = "_"))]
+  wgs_id <- no_amr
+  remarks <- "No AMR determinant detected"
+  
+  df <- data.frame(sample_id, wgs_id, remarks)
+  
+  no_amr_table <- kable(df,align = "c", row.names = FALSE) %>%
     kable_styling(position = "left") %>%
-    row_spec(0, background = "#D4D4D4", bold = TRUE)
+    row_spec(0, background = "#D4D4D4",bold = TRUE)
+   
+
+
+  print(no_amr_table)
+  
 }
 
 ```
 
 \end{landscape}
-
-
