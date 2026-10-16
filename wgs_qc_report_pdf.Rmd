@@ -345,17 +345,8 @@ qc_listing_df <- qc_listing_df %>%
   select(-Genus, -concordant) %>%
   mutate(sample_id = sub("(.*)_[^_]*$", "\\1", sample_id))
 
-# Escape LaTeX special characters in all text columns
-escape_tex <- function(x) {
-  x <- gsub("\\", "\\textbackslash{}", x, fixed = TRUE)
-  x <- gsub("([#$%&_{}])", "\\\\\\1", x)
-  x <- gsub("~", "\\textasciitilde{}", x, fixed = TRUE)
-  x <- gsub("^", "\\textasciicircum{}", x, fixed = TRUE)
-  x
-}
-
-qc_listing_df <- qc_listing_df %>%
-  mutate(across(where(is.character), escape_tex))
+#Sort based on iso_num
+qc_listing_df <- qc_listing_df %>% arrange(iso_num)
 
 
 # Rename and reorder columns
@@ -506,6 +497,9 @@ bactscout_df_merge <- bactscout_df_merge %>%
   relocate(iso_num, .before = "sample_id") 
 
 bactscout_df_merge$sample_id <- gsub("_", "\\_", bactscout_df_merge$sample_id, fixed = TRUE)
+
+#Sort based on iso_num
+bactscout_df_merge <- bactscout_df_merge %>% arrange(iso_num)
 
 # Rename and reorder columns
 colnames(bactscout_df_merge) <- c("Isolate No.","Sample ID", "Species", "Species Abundance", "Coverage (Qualibact)", "Duplication Rate",
@@ -832,6 +826,10 @@ check_bounds <- function(value, lower, upper) {
 # --- Apply QC checks ---
 assembly_qc_checked <- assembly_qc
 
+
+#Sort based on iso_num
+assembly_qc_checked <- assembly_qc_checked %>% arrange(iso_num)
+
 for (m in names(metric_map)) {
 
   ref <- qualibact_ref %>%
@@ -946,7 +944,8 @@ assembly_qc_value$genome_size <- bp_to_mb(assembly_qc_value$genome_size)
 
 assembly_qc_value$sample_id <- gsub("_", "\\_", assembly_qc_value$sample_id, fixed = TRUE)
 
-
+#Sort based on iso_num
+assembly_qc_value <- assembly_qc_value %>% arrange(iso_num)
 
 
 # Rename and reorder columns

@@ -300,6 +300,10 @@ raw_read_failed_clean <- sub("(.*)_[^_]*$", "\\1", raw_read_failed)
 failure_color <- which(qc_listing_df$sample_id %in% raw_read_failed_clean)
 
 
+#Sort based on iso_num
+qc_listing_df <- qc_listing_df %>% arrange(iso_num)
+
+
 # Rename and reorder columns
 colnames(qc_listing_df) <- c("Sample ID", "WGS", "ARSRL", "Isolate No.", "Description", "Index")
 qc_listing_df <- qc_listing_df[, c("Isolate No.", "Sample ID", "Description", "Index", "ARSRL", "WGS")]
@@ -494,7 +498,8 @@ bactscout_df_merge <- bactscout_df_merge %>%
   select(-arsrl_org) %>%
   relocate(iso_num, .before = "sample_id") 
 
-
+#Sort based on iso_num
+bactscout_df_merge <- bactscout_df_merge %>% arrange(iso_num)
 
 # Rename columns
 colnames(bactscout_df_merge) <- c("Isolate No.","Sample ID", "Species", "Species Abundance", "Coverage (Qualibact)", "Duplication Rate",
@@ -967,6 +972,9 @@ bp_to_mb <- function(bp) {
 }
 
 assembly_qc_value$genome_size <- bp_to_mb(assembly_qc_value$genome_size)
+
+#Sort based on iso_num
+assembly_qc_value <- assembly_qc_value %>% arrange(iso_num)
 
 
 # Rename and reorder columns
